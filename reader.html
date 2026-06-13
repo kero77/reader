@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>長文しおりリーダー</title>
+<!-- iOS PWA（ホーム画面に追加で全画面アプリとして起動） -->
+<meta name="theme-color" content="#c2410c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="しおりリーダー">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Crect width='180' height='180' rx='38' fill='%23c2410c'/%3E%3Ctext x='90' y='128' font-size='110' text-anchor='middle'%3E%F0%9F%94%96%3C/text%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#f6f5f1; --panel:#ffffff; --ink:#2b2b2b; --sub:#6b6b6b;
+    --line:#e3e0d8; --accent:#c2410c; --accent-soft:#fde6d8;
+    --visited:#9aa0a6; --mark:#fff3bf; --hover:#f0eee8; --reader-hover:#faf7ef;
+  }
+  body[data-theme="dark"]{
+    --bg:#16181c; --panel:#1e2127; --ink:#e6e3dc; --sub:#9aa0a6;
+    --line:#33373f; --accent:#f0834d; --accent-soft:#3a2a20;
+    --visited:#6b7178; --mark:#5a4a1e; --hover:#272b33; --reader-hover:#21242b;
+  }
+  *{box-sizing:border-box}
+  html,body{
+    margin:0; height:100%; width:100%; max-width:100%;
+    overflow-x:hidden; overscroll-behavior-x:none;
+  }
+  body{
+    font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,system-ui,sans-serif;
+    background:var(--bg); color:var(--ink); display:flex; flex-direction:column; height:100vh;
+    touch-action:pan-y;
+  }
+  #content,.ln{overflow-wrap:anywhere; word-break:break-word}
+  header{
+    display:flex; align-items:center; gap:10px; padding:8px 14px;
+    background:var(--panel); border-bottom:1px solid var(--line); flex:0 0 auto; flex-wrap:wrap;
+  }
+  header h1{font-size:15px; margin:0; font-weight:700; color:var(--accent); white-space:nowrap}
+  header select{
+    font-size:14px; padding:6px 8px; border:1px solid var(--line); border-radius:6px;
+    background:var(--panel); color:var(--ink); max-width:38vw;
+  }
+  button{
+    font-size:13px; padding:6px 11px; border:1px solid var(--line); border-radius:6px;
+    background:var(--panel); color:var(--ink); cursor:pointer; white-space:nowrap;
+  }
+  button:hover{background:var(--hover)}
+  button.primary{background:var(--accent); color:#fff; border-color:var(--accent)}
+  button.primary:hover{filter:brightness(1.07)}
+  button.danger:hover{background:#fde8e8; border-color:#e88; color:#b00}
+  button:disabled{opacity:.5; cursor:default}
+  .spacer{flex:1}
+  .progress-pill{font-size:12px; color:var(--sub); white-space:nowrap}
+  main{flex:1; display:flex; min-height:0}
+  #toc{
+    flex:0 0 290px; background:var(--panel); border-right:1px solid var(--line);
+    overflow:auto; padding:10px 6px;
+  }
+  #toc .toc-head{font-size:12px; color:var(--sub); padding:4px 8px; display:flex; justify-content:space-between; align-items:center}
+  .bm{
+    display:flex; align-items:flex-start; gap:6px; padding:7px 8px; border-radius:6px;
+    cursor:pointer; font-size:13.5px; line-height:1.45;
+  }
+  .bm:hover{background:var(--accent-soft)}
+  .bm .ic{flex:0 0 auto; font-size:12px; opacity:.8; margin-top:1px}
+  .bm.manual .ic{color:var(--accent)}
+  .bm.ai .ic{color:#7c3aed}
+  .bm.lvl-sub{padding-left:22px; font-size:12.5px; color:var(--sub)}
+  .bm.visited .label{color:var(--visited); text-decoration:line-through; text-decoration-color:#cdcdcd}
+  .bm .del{flex:0 0 auto; opacity:0; color:#b00; font-size:12px; padding:0 2px}
+  .bm:hover .del{opacity:.55}
+  .bm .del:hover{opacity:1}
+  .bm.here{background:#fff3bf; outline:1px solid #f0d98a}
+  #reader{flex:1; overflow-y:auto; overflow-x:hidden; padding:24px 18px 60vh; scroll-behavior:smooth; touch-action:pan-y; overscroll-behavior-x:contain}
+  #content{max-width:760px; margin:0 auto; font-size:16px; line-height:1.95}
+  /* HTMLモード描画 */
+  #content.htmlmode{line-height:1.85; color:var(--ink); background:transparent; overflow-wrap:anywhere; word-break:break-word}
+  #content.htmlmode *{max-width:100%!important; min-width:0!important; background-color:transparent!important}
+  #content.htmlmode img{height:auto!important; filter:none!important}
+  #content.htmlmode table{width:auto!important; max-width:100%!important; table-layout:auto; border-collapse:collapse}
+  #content.htmlmode td,#content.htmlmode th{white-space:normal!important; word-break:break-word}
+  #content.htmlmode pre{white-space:pre-wrap!important}
+  #content.htmlmode a{color:var(--accent)}
+  #content.htmlmode [id]{scroll-margin-top:10px}
+  .ln{position:relative; padding:1px 0 1px 26px; border-radius:4px}
+  .ln:hover{background:var(--reader-hover)}
+  .ln .ribbon{
+    position:absolute; left:0; top:2px; width:20px; height:20px; border:0; background:transparent;
+    opacity:0; cursor:pointer; font-size:13px; padding:0; color:var(--sub);
+  }
+  .ln:hover .ribbon{opacity:.5}
+  .ln .ribbon:hover{opacity:1; color:var(--accent)}
+  .ln.blank{height:.7em}
+  .ln.h1{font-size:21px; font-weight:700; margin:26px 0 6px; color:var(--ink); border-bottom:2px solid var(--accent-soft); padding-bottom:3px; scroll-margin-top:10px}
+  .ln.h2{font-size:17px; font-weight:700; margin:16px 0 4px; color:var(--accent); scroll-margin-top:10px}
+  .ln.sep{color:#bbb}
+  .ln.flash,.flash{animation:flash 1.6s ease}
+  @keyframes flash{0%{background:var(--mark)}100%{background:transparent}}
+  .ln.bookmarked::before{content:"🔖"; position:absolute; left:2px; top:1px; font-size:13px}
+  .ln.bookmarked{background:var(--accent-soft)}
+  #empty{flex:1; display:flex; align-items:center; justify-content:center; padding:24px; overflow:auto}
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:22px;
+    width:min(720px,92vw);
+  }
+  .card h2{margin:0 0 4px; font-size:18px}
+  .card p{margin:0 0 14px; color:var(--sub); font-size:13px; line-height:1.7}
+  .card input[type=text]{
+    width:100%; font-size:15px; padding:9px 11px; border:1px solid var(--line); border-radius:7px; margin-bottom:10px;
+    background:var(--bg); color:var(--ink);
+  }
+  .card textarea{
+    width:100%; height:34vh; font-size:14px; padding:11px; border:1px solid var(--line);
+    border-radius:8px; resize:vertical; line-height:1.6; font-family:inherit;
+    background:var(--bg); color:var(--ink);
+  }
+  .card .row{display:flex; gap:8px; margin-top:12px; align-items:center; flex-wrap:wrap}
+  .hint{font-size:12px; color:var(--sub)}
+  .hidden{display:none!important}
+  #settings{
+    position:fixed; inset:0; background:#0006; display:flex; align-items:center; justify-content:center;
+    z-index:20; padding:18px;
+  }
+  #settings .box{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px;
+    width:min(460px,94vw); color:var(--ink);
+  }
+  #settings h3{margin:0 0 10px; font-size:16px}
+  #settings label{display:block; font-size:12px; color:var(--sub); margin:10px 0 4px}
+  #settings input,#settings select{
+    width:100%; font-size:14px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;
+    background:var(--bg); color:var(--ink);
+  }
+  #settings .row{display:flex; gap:8px; justify-content:flex-end; margin-top:16px}
+  .ai-status{font-size:12px; color:var(--accent); margin-left:4px}
+  @media(max-width:680px){
+    #toc{flex-basis:46vw; position:absolute; z-index:5; height:100%; box-shadow:2px 0 8px #0002}
+    #toc.collapsed{display:none}
+    header select{max-width:30vw}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔖 しおりリーダー</h1>
+  <button id="btnTocToggle" title="しおり一覧の表示切替">☰</button>
+  <select id="docSelect" title="保存したメールを選択"></select>
+  <button id="btnNew" class="primary">＋新規</button>
+  <span class="spacer"></span>
+  <button id="btnRegenAI" title="AIでしおりを細かく作り直す（要APIキー）">✨しおり再生成</button>
+  <button id="btnExport" title="OneDrive用に自己完結HTMLとして書き出し">📤書き出し</button>
+  <button id="btnSettings" title="AI整形の設定（APIキー）">⚙️</button>
+  <button id="btnTheme" title="ナイトモード切替">🌙</button>
+  <span id="progressPill" class="progress-pill"></span>
+  <button id="btnDrop" title="今読んでいる位置にしおりを挟む">📍</button>
+  <button id="btnDelete" class="danger" title="このメールを削除">🗑️</button>
+</header>
+
+<main>
+  <aside id="toc">
+    <div class="toc-head"><span>しおり / 目次</span><span id="bmCount"></span></div>
+    <div id="bmList"></div>
+  </aside>
+
+  <section id="reader" class="hidden"><div id="content"></div></section>
+
+  <section id="empty">
+    <div class="card">
+      <h2 id="cardTitle">メールを取り込んでしおりを作成</h2>
+      <p>テキストを貼り付けるか、PCのGmail（ブラウザ版）で本文をコピーして「リッチ貼り付け」を使うと、図・表・画像・書式を保持して取り込めます。読んだ位置は自動保存。完成したら「📤書き出し」でOneDriveに置けばiOSでも開けます。</p>
+      <input type="text" id="inTitle" placeholder="タイトル（空欄なら自動）">
+      <div class="row" style="margin:0 0 8px">
+        <button id="btnRichPaste" class="primary">📋 リッチ貼り付け(HTML・図表対応)</button>
+        <button id="btnPaste">クリップボードからテキスト</button>
+        <span class="hint">Gmail webで本文をコピー→押す</span>
+      </div>
+      <textarea id="inBody" placeholder="ここにメール本文（テキスト）を貼り付け…"></textarea>
+      <div class="row">
+        <button id="btnSave" class="primary">保存（自動しおり）</button>
+        <button id="btnSaveAI" title="Anthropic APIで意味的にセクション分け">✨ AI整形で保存</button>
+        <button id="btnCancel">キャンセル</button>
+        <span id="aiStatus" class="ai-status"></span>
+      </div>
+      <p class="hint" style="margin-top:8px">データはこの端末のブラウザ内(localStorage)に保存されます。AI整形にはAPIキー設定（⚙️）が必要です。</p>
+    </div>
+  </section>
+
+  <section id="settings" class="hidden">
+    <div class="box">
+      <h3>⚙️ AI整形の設定</h3>
+      <p class="hint">使うAIを選び、そのAPIキーを入力すると「✨ AI整形 / しおり再生成」が使えます。キーはこの端末のブラウザ内にのみ保存されます（プロバイダごとに別保存）。</p>
+      <label>AIプロバイダ</label>
+      <select id="apiProvider">
+        <option value="anthropic">Anthropic（Claude）</option>
+        <option value="openai">OpenAI（ChatGPT）</option>
+        <option value="google">Google（Gemini）</option>
+      </select>
+      <label>APIキー <span id="keyHint" class="hint"></span></label>
+      <input type="password" id="apiKey" placeholder="APIキー">
+      <label>使用モデル</label>
+      <select id="apiModel"></select>
+      <label>しおりモード</label>
+      <select id="apiBmMode">
+        <option value="hybrid">ハイブリッド（自動の大枠＋AIの細部・推奨）</option>
+        <option value="auto">自動のみ（API不要）</option>
+      </select>
+      <label>しおりの細かさ（AIの細部）</label>
+      <select id="apiGran">
+        <option value="coarse">粗い（章・記事タイトルのみ / 目安8〜20）</option>
+        <option value="normal">標準（＋主要な小見出し / 目安15〜35）</option>
+        <option value="fine">細かい（Q&Aの各設問・小項目まで / 目安30〜70）</option>
+      </select>
+      <div class="row">
+        <button id="btnSettingsSave" class="primary">保存</button>
+        <button id="btnSettingsClose">閉じる</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+/* ============================================================
+   長文しおりリーダー — 単体HTML / localStorage / 依存なし
+   テキスト & HTML(図表対応) の2形式 + OneDrive用 自己完結HTML書き出し
+   ============================================================ */
+const LS_KEY="mailReaderDocs_v1";
+const THEME_KEY="mailReaderTheme";
+const APIKEY_KEY="mailReaderApiKey";
+const MODEL_KEY="mailReaderApiModel";
+const $=s=>document.querySelector(s);
+
+/* ---------- ナイトモード ---------- */
+function applyTheme(mode){
+  document.body.dataset.theme=mode;
+  const b=document.getElementById("btnTheme");
+  if(b) b.textContent = mode==="dark" ? "☀️" : "🌙";
+}
+function initTheme(){
+  let mode=localStorage.getItem(THEME_KEY);
+  if(!mode) mode=(window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"light";
+  applyTheme(mode);
+}
+function toggleTheme(){
+  const next=document.body.dataset.theme==="dark"?"light":"dark";
+  localStorage.setItem(THEME_KEY,next); applyTheme(next);
+}
+
+let docs=load();
+let currentId=null;
+let saveScrollTimer=null;
+
+/* ---------- 永続化 ---------- */
+function load(){ try{ return JSON.parse(localStorage.getItem(LS_KEY))||[]; }catch(e){ return []; } }
+function persist(){ localStorage.setItem(LS_KEY, JSON.stringify(docs)); }
+function uid(){ return "d"+Math.random().toString(36).slice(2,9)+docs.length; }
+function escapeHtml(s){ return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+/* ============================================================
+   テキスト形式：見出し自動検出（ヒューリスティック）
+   ============================================================ */
+function isSep(t){ return /^[\s]*[━─=＝*\-‐—]{3,}[\s]*$/.test(t); }
+function detectBookmarks(lines){
+  const bms=[], n=lines.length;
+  const blank=i=>i<0||i>=n||lines[i].trim()==="";
+  for(let i=0;i<n;i++){
+    const raw=lines[i], t=raw.trim();
+    if(!t||isSep(t)) continue;
+    let isHead=false, lvl=2;
+    if(/^[【■◆◇★#]/.test(t)||/^＞|^>/.test(t)){ isHead=true; lvl=/^[■#]/.test(t)?1:2; }
+    else{
+      const prevSepOrBlank=blank(i-1)||isSep((lines[i-1]||"").trim());
+      const nextBlank=blank(i+1);
+      const endsSentence=/[。．\.！？]$/.test(t);
+      if(prevSepOrBlank&&nextBlank&&!endsSentence&&t.length<=80){ isHead=true; lvl=(t.length<=14)?1:2; }
+    }
+    if(isHead){
+      let label=t.replace(/^[【■◆◇★#＞>]\s*/,"").replace(/】$/,"").trim();
+      if(label.length>42) label=label.slice(0,40)+"…";
+      bms.push({ line:i, label, type:"auto", lvl, visited:false });
+    }
+  }
+  return bms;
+}
+
+/* ============================================================
+   HTML形式：サニタイズ + 見出し検出（id付与）
+   ============================================================ */
+/* インラインstyleから色・背景色だけを除去（テーマ色を継承させる） */
+function stripColorsFromStyle(style){
+  return style.split(";").map(d=>d.trim()).filter(d=>{
+    if(!d) return false;
+    const p=(d.split(":")[0]||"").trim().toLowerCase();
+    return !/^(color|background|background-color|-webkit-text-fill-color|filter|-webkit-filter)$/.test(p);
+  }).join("; ");
+}
+function sanitizeHtml(html){
+  const doc=new DOMParser().parseFromString(html,"text/html");
+  doc.querySelectorAll("script,style,link,meta,title,base,iframe,object,embed,form,input,button,noscript").forEach(n=>n.remove());
+  doc.querySelectorAll("*").forEach(el=>{
+    Array.from(el.attributes).forEach(a=>{
+      const n=a.name.toLowerCase();
+      if(n.startsWith("on")) el.removeAttribute(a.name);
+      else if(n==="color"||n==="bgcolor"||n==="text") el.removeAttribute(a.name); // <font color> / bgcolor 等
+      else if((n==="href"||n==="src"||n==="xlink:href")&&/^\s*javascript:/i.test(a.value)) el.removeAttribute(a.name);
+    });
+    if(el.hasAttribute("style")){
+      const s=stripColorsFromStyle(el.getAttribute("style"));
+      if(s) el.setAttribute("style",s); else el.removeAttribute("style");
+    }
+  });
+  // 画像: GmailプロキシURL(googleusercontentはCORS *)を保持。書き出し時にdata:へインライン化する
+  doc.querySelectorAll("img").forEach(img=>{
+    img.setAttribute("referrerpolicy","no-referrer");
+    img.removeAttribute("loading"); img.removeAttribute("srcset");
+  });
+  return doc.body ? doc.body.innerHTML : "";
+}
+/* HTMLのしおりは buildHtmlBookmarks()（AI整形セクション内）で生成する */
+
+/* ---------- ドキュメント生成 ---------- */
+function newDoc(title, body){
+  const lines=body.replace(/\r/g,"").split("\n");
+  let t=(title||"").trim();
+  if(!t) t=(lines.find(l=>l.trim())||"無題").trim().slice(0,50);
+  const doc={ id:uid(), title:t, format:"text", body, lines,
+    bookmarks:detectBookmarks(lines), scroll:0, readMark:null, createdAt:new Date().toISOString(), progress:0 };
+  docs.unshift(doc); persist(); return doc;
+}
+function newHtmlDoc(title, rawHtml){
+  const clean=sanitizeHtml(rawHtml);
+  const built=buildHtmlBookmarks(clean, null); // 貼り付け時は自動(大枠)のみ
+  const tmp=document.createElement("div"); tmp.innerHTML=built.html;
+  let t=(title||"").trim();
+  if(!t){
+    const h=tmp.querySelector("h1,h2,h3");
+    t=((h&&h.textContent)||(built.bookmarks[0]&&built.bookmarks[0].label)||tmp.textContent||"無題").trim().slice(0,60);
+  }
+  const doc={ id:uid(), title:t, format:"html", html:built.html,
+    bookmarks:built.bookmarks, scroll:0, readMark:null, createdAt:new Date().toISOString(), progress:0 };
+  docs.unshift(doc); persist(); return doc;
+}
+function getDoc(id){ return docs.find(d=>d.id===id); }
+
+/* ---------- 描画: ドロップダウン ---------- */
+function renderDocSelect(){
+  const sel=$("#docSelect"); sel.innerHTML="";
+  if(docs.length===0){ const o=document.createElement("option"); o.textContent="（保存済みなし）"; o.value=""; sel.appendChild(o); return; }
+  for(const d of docs){
+    const o=document.createElement("option"); o.value=d.id;
+    const pct=d.progress||0;
+    o.textContent=`${pct>=100?"✓ ":""}${d.format==="html"?"🖼 ":""}${d.title}  (${pct}%)`;
+    sel.appendChild(o);
+  }
+  sel.value=currentId||docs[0].id;
+}
+
+/* ---------- 描画: 本文 ---------- */
+function renderContent(doc){
+  const c=$("#content"); c.innerHTML=""; c.className="";
+  if(doc.format==="html"){ c.className="htmlmode"; c.innerHTML=doc.html; return; }
+  const headLines=new Map(doc.bookmarks.map(b=>[b.line,b.lvl]));
+  doc.lines.forEach((raw,i)=>{
+    const t=raw.trim();
+    const div=document.createElement("div"); div.className="ln"; div.dataset.line=i;
+    if(t===""){ div.classList.add("blank"); }
+    else if(isSep(t)){ div.classList.add("sep"); div.textContent=t; }
+    else if(headLines.has(i)){ div.classList.add(headLines.get(i)===1?"h1":"h2"); div.textContent=t; }
+    else{ div.textContent=raw; }
+    if(doc.readMark===i) div.classList.add("bookmarked");
+    const rb=document.createElement("button");
+    rb.className="ribbon"; rb.textContent="🔖"; rb.title="この行に手動しおりを追加";
+    rb.onclick=e=>{ e.stopPropagation(); addManualBookmark(i); };
+    if(t!=="") div.appendChild(rb);
+    c.appendChild(div);
+  });
+}
+
+/* ---------- 描画: しおり一覧 ---------- */
+function bmKey(b){ return b.aid ? b.aid : ("L"+b.line); }
+function renderBookmarks(doc){
+  const list=$("#bmList"); list.innerHTML="";
+  $("#bmCount").textContent=doc.bookmarks.length+"件";
+  const sorted=[...doc.bookmarks];
+  if(doc.format!=="html") sorted.sort((a,b)=>a.line-b.line);
+  for(const b of sorted){
+    const row=document.createElement("div");
+    row.className="bm "+(b.type||"")+(b.lvl===2?" lvl-sub":"")+(b.visited?" visited":"");
+    row.dataset.k=bmKey(b);
+    const ic=document.createElement("span"); ic.className="ic";
+    ic.textContent=b.type==="manual"?"🔖":(b.type==="ai"?"✨":(b.lvl===1?"●":"○"));
+    const lab=document.createElement("span"); lab.className="label"; lab.textContent=b.label;
+    const del=document.createElement("span"); del.className="del"; del.textContent="×"; del.title="このしおりを削除";
+    del.onclick=e=>{ e.stopPropagation(); doc.bookmarks=doc.bookmarks.filter(x=>x!==b); persist(); renderBookmarks(doc); };
+    row.append(ic,lab,del);
+    row.onclick=()=>jumpTo(b);
+    list.appendChild(row);
+  }
+}
+
+/* ---------- ジャンプ ---------- */
+function targetEl(b){
+  if(b.aid) return document.getElementById(b.aid);
+  return document.querySelector(`#content .ln[data-line="${b.line}"]`);
+}
+function jumpTo(b){
+  const el=targetEl(b); if(!el) return;
+  el.scrollIntoView({behavior:"smooth", block: b.aid?"start":"center"});
+  el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+  b.visited=true; persist();
+  const doc=getDoc(currentId); renderBookmarks(doc);
+  document.querySelectorAll(".bm.here").forEach(x=>x.classList.remove("here"));
+  const row=document.querySelector(`.bm[data-k="${bmKey(b)}"]`); if(row) row.classList.add("here");
+  if(window.innerWidth<=680) $("#toc").classList.add("collapsed");
+}
+
+/* ---------- 手動しおり（テキストのみ） ---------- */
+function addManualBookmark(line){
+  const doc=getDoc(currentId); if(!doc) return;
+  const lineText=(doc.lines[line]||"").trim();
+  const def=lineText.slice(0,30)||("行"+(line+1));
+  const label=prompt("しおりの名前:", def);
+  if(label===null) return;
+  doc.bookmarks.push({ line, label:label.trim()||def, type:"manual", lvl:2, visited:false });
+  persist(); renderBookmarks(doc);
+}
+function dropReadMark(){
+  const doc=getDoc(currentId); if(!doc||doc.format==="html") return;
+  const reader=$("#reader");
+  const lns=[...document.querySelectorAll("#content .ln")];
+  const top=reader.getBoundingClientRect().top;
+  let target=lns.find(el=>el.getBoundingClientRect().top>=top+8)||lns[lns.length-1];
+  if(!target) return;
+  const line=parseInt(target.dataset.line,10);
+  doc.readMark=line; persist(); renderContent(doc);
+  const el=$(`#content .ln[data-line="${line}"]`);
+  if(el){ el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+  flashPill("📍 ここまで読んだ位置を記録");
+}
+
+/* ---------- スクロール保存 / 進捗 ---------- */
+function onReaderScroll(){
+  clearTimeout(saveScrollTimer);
+  saveScrollTimer=setTimeout(()=>{
+    const doc=getDoc(currentId); if(!doc) return;
+    const reader=$("#reader");
+    doc.scroll=reader.scrollTop;
+    const max=reader.scrollHeight-reader.clientHeight;
+    const pct=max<=0?100:Math.min(100,Math.round(reader.scrollTop/max*100));
+    doc.progress=Math.max(doc.progress||0,pct); persist();
+    $("#progressPill").textContent=`読了 ${doc.progress}%`;
+  },250);
+}
+
+/* ---------- 開く / 新規 ---------- */
+function openDoc(id){
+  const doc=getDoc(id); if(!doc) return;
+  currentId=id;
+  $("#empty").classList.add("hidden"); $("#settings").classList.add("hidden");
+  $("#reader").classList.remove("hidden");
+  $("#btnDrop").style.display = doc.format==="html" ? "none" : "";
+  renderContent(doc); renderBookmarks(doc); renderDocSelect();
+  $("#progressPill").textContent=`読了 ${doc.progress||0}%`;
+  requestAnimationFrame(()=>{ $("#reader").scrollTop=doc.scroll||0; });
+}
+function showNew(){
+  $("#reader").classList.add("hidden"); $("#empty").classList.remove("hidden");
+  $("#inTitle").value=""; $("#inBody").value="";
+  const st=$("#aiStatus"); if(st) st.textContent="";
+  $("#inBody").focus();
+}
+function flashPill(msg){
+  const p=$("#progressPill"); p.textContent=msg;
+  setTimeout(()=>{ const d=getDoc(currentId); p.textContent=d?`読了 ${d.progress||0}%`:""; },1600);
+}
+
+/* ---------- 設定（マルチプロバイダ） ---------- */
+const PROVIDERS={
+  anthropic:{ keyHint:"sk-ant-...", models:[
+    ["claude-haiku-4-5","Claude Haiku 4.5（最安・推奨）"],
+    ["claude-sonnet-4-6","Claude Sonnet 4.6（バランス）"],
+    ["claude-opus-4-8","Claude Opus 4.8（高品質・高価）"] ]},
+  openai:{ keyHint:"sk-...", models:[
+    ["gpt-4o-mini","GPT-4o mini（最安・推奨）"],
+    ["gpt-4.1-mini","GPT-4.1 mini"],
+    ["gpt-4o","GPT-4o（高品質）"] ]},
+  google:{ keyHint:"AIza...", models:[
+    ["gemini-2.5-flash","Gemini 2.5 Flash（推奨）"],
+    ["gemini-2.5-flash-lite","Gemini 2.5 Flash-Lite（最安）"],
+    ["gemini-2.5-pro","Gemini 2.5 Pro（高品質）"] ]}
+};
+const PROVIDER_KEY="mr_provider";
+function keyId(p){ return "mr_key_"+p; }
+function modelId(p){ return "mr_model_"+p; }
+function curProvider(){ return localStorage.getItem(PROVIDER_KEY)||"anthropic"; }
+function curKey(p){ p=p||curProvider();
+  let k=localStorage.getItem(keyId(p))||"";
+  if(!k && p==="anthropic") k=localStorage.getItem(APIKEY_KEY)||""; // 旧キー互換
+  return k.trim();
+}
+function curModel(p){ p=p||curProvider();
+  let m=localStorage.getItem(modelId(p));
+  if(!m && p==="anthropic") m=localStorage.getItem(MODEL_KEY);
+  const valid=PROVIDERS[p].models.some(x=>x[0]===m); // 提供終了モデルは既定に戻す
+  return valid ? m : PROVIDERS[p].models[0][0];
+}
+function fillModelOptions(p){
+  const sel=$("#apiModel"); sel.innerHTML="";
+  PROVIDERS[p].models.forEach(([v,l])=>{ const o=document.createElement("option"); o.value=v; o.textContent=l; sel.appendChild(o); });
+  sel.value=curModel(p);
+}
+function loadProviderIntoForm(p){
+  $("#apiProvider").value=p;
+  $("#keyHint").textContent="（"+PROVIDERS[p].keyHint+"）";
+  $("#apiKey").value=curKey(p);
+  fillModelOptions(p);
+}
+function openSettings(){ loadProviderIntoForm(curProvider()); $("#apiGran").value=curGran(); $("#apiBmMode").value=curBmMode(); $("#settings").classList.remove("hidden"); }
+function closeSettings(){ $("#settings").classList.add("hidden"); }
+function saveSettings(){
+  const p=$("#apiProvider").value;
+  localStorage.setItem(PROVIDER_KEY,p);
+  localStorage.setItem(keyId(p),$("#apiKey").value.trim());
+  localStorage.setItem(modelId(p),$("#apiModel").value);
+  localStorage.setItem(GRAN_KEY,$("#apiGran").value);
+  localStorage.setItem(BMMODE_KEY,$("#apiBmMode").value);
+  closeSettings();
+}
+
+/* ---------- AI整形（テキスト & HTML 両対応・細かめ） ---------- */
+const AI_SCHEMA={ type:"object", properties:{
+  title:{type:"string"},
+  bookmarks:{ type:"array", items:{ type:"object", properties:{
+    label:{type:"string"}, anchor:{type:"string"}, level:{type:"integer", enum:[1,2]}
+  }, required:["label","anchor","level"], additionalProperties:false } }
+}, required:["title","bookmarks"], additionalProperties:false };
+const GRAN_KEY="mr_gran";
+const BMMODE_KEY="mr_bmmode";
+function curGran(){ return localStorage.getItem(GRAN_KEY)||"normal"; }
+function curBmMode(){ return localStorage.getItem(BMMODE_KEY)||"hybrid"; }
+function buildSystem(g){
+  const detail = g==="coarse"
+    ? "粒度は粗め。大きな章・各記事のタイトルなど主要な区切りだけを拾う(目安8〜20個)。細かい小見出しやQ&Aの個別設問は拾わず、まとめる。"
+    : g==="fine"
+    ? "粒度は細かめ。章・各記事タイトルに加え、小見出し・話題の切り替わり・Q&Aの各設問まで拾う(目安30〜70個)。"
+    : "粒度は標準。章・各記事タイトルと、主要な小見出し・大きな話題の切り替わりを拾う(目安15〜35個)。細かすぎる分割は避ける。";
+  return "あなたは長文メール/メルマガを読みやすく構造化するアシスタントです。本文をセクション分けし、しおり(目次)を作ります。"+
+    detail+
+    "英語タイトル(例: A.I. and Our Economic Future)も1つの見出しとして拾うこと。"+
+    "各項目は label(見出し。必要なら『見出し — 短い要約』)、anchor(そのセクションが始まる箇所の原文を写した完全一致の連続15〜40文字。改変・要約禁止)、"+
+    "level(大見出し=1, 小見出し=2)。anchorは必ず本文からそのままコピー。日本語。JSONのみ出力。";
+}
+const NORM=s=>(s||"").replace(/\s/g,"");
+
+async function apiError(res){
+  let m=res.status; try{ const e=await res.json(); m=(e.error&&(e.error.message||e.error))||(e.message)||m; }catch(_){ }
+  return new Error("API エラー: "+m);
+}
+async function callAnthropic(key,model,text,system){
+  const res=await fetch("https://api.anthropic.com/v1/messages",{ method:"POST",
+    headers:{ "content-type":"application/json","x-api-key":key,
+      "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true" },
+    body:JSON.stringify({ model, max_tokens:8000, system,
+      messages:[{role:"user",content:text}], output_config:{format:{type:"json_schema",schema:AI_SCHEMA}} }) });
+  if(!res.ok) throw await apiError(res);
+  const data=await res.json();
+  return (data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("");
+}
+async function callOpenAI(key,model,text,system){
+  const res=await fetch("https://api.openai.com/v1/chat/completions",{ method:"POST",
+    headers:{ "content-type":"application/json","authorization":"Bearer "+key },
+    body:JSON.stringify({ model,
+      messages:[{role:"system",content:system},{role:"user",content:text}],
+      response_format:{type:"json_schema", json_schema:{name:"sections", strict:true, schema:AI_SCHEMA}},
+      max_tokens:8000 }) });
+  if(!res.ok) throw await apiError(res);
+  const data=await res.json();
+  return (((data.choices||[])[0]||{}).message||{}).content||"";
+}
+async function callGemini(key,model,text,system){
+  const gSchema={ type:"OBJECT", properties:{
+    title:{type:"STRING"},
+    bookmarks:{ type:"ARRAY", items:{ type:"OBJECT", properties:{
+      label:{type:"STRING"}, anchor:{type:"STRING"}, level:{type:"INTEGER"}
+    }, required:["label","anchor","level"] } }
+  }, required:["title","bookmarks"] };
+  const url="https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(model)+":generateContent?key="+encodeURIComponent(key);
+  const gen={ responseMimeType:"application/json", responseSchema:gSchema, maxOutputTokens:24000 };
+  if(!/pro/i.test(model)) gen.thinkingConfig={thinkingBudget:0}; // Flash系は思考オフ→出力枠をJSONに充てる
+  const res=await fetch(url,{ method:"POST", headers:{"content-type":"application/json"},
+    body:JSON.stringify({ systemInstruction:{parts:[{text:system}]},
+      contents:[{role:"user",parts:[{text}]}], generationConfig:gen }) });
+  if(!res.ok) throw await apiError(res);
+  const data=await res.json();
+  const cand=(data.candidates||[])[0]||{};
+  const parts=(cand.content||{}).parts||[];
+  const out=parts.map(p=>p.text||"").join("");
+  if(!out.trim() && cand.finishReason)
+    throw new Error("Geminiが出力を返しませんでした（finishReason: "+cand.finishReason+"）。Flash-Liteを試すか、本文を短くしてください。");
+  if(cand.finishReason==="MAX_TOKENS" && !out.trim().endsWith("}"))
+    throw new Error("出力がトークン上限で途切れました。モデルをFlash-Liteにするか本文を分割してください。");
+  return out;
+}
+async function aiSections(text){
+  const provider=curProvider();
+  const key=curKey(provider);
+  if(!key) throw new Error("APIキー未設定。⚙️から設定してください。");
+  const model=curModel(provider);
+  const system=buildSystem(curGran());
+  let raw;
+  if(provider==="openai") raw=await callOpenAI(key,model,text,system);
+  else if(provider==="google") raw=await callGemini(key,model,text,system);
+  else raw=await callAnthropic(key,model,text,system);
+  if(!raw) throw new Error("AIの応答が空でした。");
+  let parsed;
+  try{ parsed=JSON.parse(raw); }
+  catch(_){ const m=raw.match(/\{[\s\S]*\}/); if(!m) throw new Error("AI応答をJSONとして解釈できませんでした。"); parsed=JSON.parse(m[0]); }
+  return { title:(parsed.title||"").trim(), sections:parsed.bookmarks||[] };
+}
+
+/* セクション(anchor)→テキスト行 にマッピング */
+function mapSectionsToLines(sections, lines){
+  const used=new Set(), out=[];
+  for(const b of sections){
+    const a=NORM(b.anchor); if(a.length<6) continue;
+    const key=a.slice(0,Math.min(a.length,30));
+    let line=-1;
+    for(let i=0;i<lines.length;i++){ if(used.has(i))continue; if(NORM(lines[i]).includes(key)){ line=i; break; } }
+    if(line<0) continue; used.add(line);
+    out.push({ line, label:(b.label||"").slice(0,60)||lines[line].slice(0,30), type:"ai", lvl:b.level===1?1:2, visited:false });
+  }
+  return out;
+}
+/* HTMLのテキスト抽出（レイアウト準拠の改行付き） */
+function htmlToText(html){
+  const t=document.createElement("div"); t.innerHTML=html;
+  t.style.cssText="position:absolute;left:-99999px;top:0;width:760px;visibility:hidden";
+  document.body.appendChild(t);
+  const text=t.innerText||t.textContent||"";
+  document.body.removeChild(t);
+  return text;
+}
+/* HTMLしおりの統合生成。aiSecs=null なら自動(大枠/lvl1)のみ、
+   aiSecs があれば AI(細部/lvl2) を重複排除して追加。{html, bookmarks} を返す。
+   ・非表示要素(display:none のプリヘッダ等)を除外
+   ・AIは読む順に前方カーソルで割り当て、設問の<p>まで降下、自前idは毎回振り直し */
+function buildHtmlBookmarks(html, aiSecs){
+  const cont=document.createElement("div");
+  cont.innerHTML=html;
+  cont.style.cssText="position:absolute;left:-99999px;top:0;width:760px"; // レイアウトさせて可視判定
+  document.body.appendChild(cont);
+  try{
+    cont.querySelectorAll('[id^="rdrbm"]').forEach(e=>e.removeAttribute("id")); // 旧自前idを全消去
+    const result=[];                       // {el,label,lvl,type}
+    const hElems=new Set(), hTexts=new Set();
+
+    // ---- 自動パス（大枠 / lvl1）----
+    const hc=[];
+    cont.querySelectorAll("h1,h2,h3,h4,h5,h6,b,strong").forEach(el=>hc.push(el));
+    cont.querySelectorAll("[style]").forEach(el=>{
+      const s=el.getAttribute("style")||"";
+      if(/font-weight\s*:\s*(bold|[6-9]00)/i.test(s)
+        || /font-size\s*:\s*(1[8-9]|[2-9]\d)px/i.test(s)
+        || /font-size\s*:\s*(1\.[3-9]|[2-9])(em|rem)/i.test(s)) hc.push(el);
+    });
+    const MARKER=/^[【《][^】》]{1,12}[】》]$/; // 【質問】《回答》等の短いマーカー
+    for(const el of hc){
+      const text=(el.textContent||"").trim();
+      if(text.length<2||text.length>90) continue;
+      if(/[。．\.！？]$/.test(text)) continue;
+      if(MARKER.test(text)) continue;                        // マーカー単体は下のルールBで処理
+      if(el.getClientRects().length===0) continue;          // 非表示(プリヘッダ)除外
+      if(hc.some(o=>o!==el && el.contains(o))) continue;     // 最内側を優先
+      if(hTexts.has(text)) continue; hTexts.add(text);
+      hElems.add(el);
+      result.push({ el, label:text.length>50?text.slice(0,48)+"…":text, lvl:1, type:"auto" });
+    }
+    const pushAuto=(el,label,lvl)=>{
+      const etext=(el.textContent||"").trim();
+      if(el.getClientRects().length===0) return;
+      if(hElems.has(el)||hTexts.has(etext)) return;
+      hElems.add(el); hTexts.add(etext);
+      result.push({ el, label:(label||etext).trim().slice(0,60), lvl, type:"auto" });
+    };
+    // ルールA: リンクのみの段落（記事タイトル）→ 全件（1本目を含む）
+    cont.querySelectorAll("a").forEach(a=>{
+      const linkText=(a.textContent||"").trim();
+      if(linkText.length<8||linkText.length>110) return;
+      const par=a.closest("p,div,li")||a.parentElement; if(!par) return;
+      const ptext=(par.textContent||"").trim();
+      if(ptext.length>linkText.length+4) return;             // 段落が実質リンクだけ
+      pushAuto(par, linkText, 2);
+    });
+    // ルールB: 【…】マーカー見出し → 直後の本文を対象に（質問/回答の各件、1件目を含む）
+    cont.querySelectorAll("h1,h2,h3,h4,h5,h6,p,div,b,strong").forEach(el=>{
+      const t=(el.textContent||"").trim();
+      if(!MARKER.test(t)) return;
+      let sib=el.nextElementSibling;
+      while(sib && !(sib.textContent||"").trim()) sib=sib.nextElementSibling;
+      if(!sib) return;
+      pushAuto(sib, t+" "+(sib.textContent||"").trim(), 2);
+    });
+
+    // ---- AIパス（細部 / lvl2）----
+    if(aiSecs && aiSecs.length){
+      const cands=Array.from(cont.querySelectorAll("*")).filter(el=>
+        (el.textContent||"").trim() && el.getClientRects().length>0);
+      const used=new Set(); let cursor=0;
+      for(const b of aiSecs){
+        const a=NORM(b.anchor); if(a.length<6) continue;
+        const key=a.slice(0,Math.min(a.length,30));
+        let hit=-1;
+        for(let i=cursor;i<cands.length;i++){ if(used.has(cands[i]))continue; if(NORM(cands[i].textContent).includes(key)){ hit=i; break; } }
+        if(hit<0){ for(let i=0;i<cands.length;i++){ if(used.has(cands[i]))continue; if(NORM(cands[i].textContent).includes(key)){ hit=i; break; } } }
+        if(hit<0) continue;
+        let el=cands[hit], k=key;
+        while(k.length>=8 && NORM(el.textContent).length>120){
+          let nx=null;
+          for(const ch of el.children){ if((ch.textContent||"").trim() && NORM(ch.textContent).includes(k)){ nx=ch; break; } }
+          if(nx) el=nx; else k=k.slice(1);
+        }
+        cursor=hit;
+        if(used.has(el)){ continue; }
+        used.add(el);
+        const etext=(el.textContent||"").trim();
+        if(hElems.has(el) || hTexts.has(etext)) continue;    // 大枠と重複は除外
+        result.push({ el, label:(b.label||etext).trim().slice(0,60), lvl:2, type:"ai" });
+      }
+    }
+
+    // ---- DOM順に整列 → 一意id付与 → bookmarks化 ----
+    result.sort((x,y)=> (x.el.compareDocumentPosition(y.el)&Node.DOCUMENT_POSITION_FOLLOWING)?-1:1 );
+    let nid=0;
+    const bookmarks=result.map(r=>{ r.el.id="rdrbm"+(nid++); return { aid:r.el.id, label:r.label, lvl:r.lvl, type:r.type, visited:false }; });
+    return { html:cont.innerHTML, bookmarks };
+  } finally {
+    document.body.removeChild(cont);
+  }
+}
+
+/* テキストしおりの統合生成。自動(大枠/lvl1)＋AI(細部/lvl2)を行番号でマージ */
+function buildTextBookmarks(lines, aiSecs){
+  const out=[], hLines=new Set();
+  for(const b of detectBookmarks(lines)){ out.push({ line:b.line, label:b.label, lvl:1, type:"auto", visited:false }); hLines.add(b.line); }
+  if(aiSecs && aiSecs.length){
+    for(const b of mapSectionsToLines(aiSecs, lines)){
+      if(hLines.has(b.line)||hLines.has(b.line-1)||hLines.has(b.line+1)) continue; // 大枠と重複/隣接は除外
+      out.push({ line:b.line, label:b.label, lvl:2, type:"ai", visited:false });
+    }
+  }
+  out.sort((a,b)=>a.line-b.line);
+  return out;
+}
+
+/* 新規テキストをAI整形して保存 */
+async function saveWithAI(){
+  const body=$("#inBody").value;
+  if(!body.trim()){ $("#inBody").focus(); return; }
+  if(!curKey()){ $("#aiStatus").textContent="APIキー未設定 → ⚙️"; openSettings(); return; }
+  const st=$("#aiStatus"); st.textContent="AI整形中…（数秒）";
+  $("#btnSaveAI").disabled=true; $("#btnSave").disabled=true;
+  try{
+    const lines=body.replace(/\r/g,"").split("\n");
+    const ai=await aiSections(body);
+    const doc=newDoc($("#inTitle").value||ai.title, body);
+    doc.bookmarks=buildTextBookmarks(lines, ai.sections); persist(); // 自動(大枠)＋AI(細部)
+    st.textContent=""; openDoc(doc.id);
+  }catch(e){ st.textContent="失敗: "+e.message+"（自動しおりで保存できます）"; }
+  finally{ $("#btnSaveAI").disabled=false; $("#btnSave").disabled=false; }
+}
+
+/* 開いている文書のしおりを再生成（モード別: 自動 / ハイブリッド、テキスト/HTML両対応） */
+async function regenAI(){
+  const doc=getDoc(currentId); if(!doc) return;
+  const mode=curBmMode();
+  const useAI = mode==="hybrid";
+  if(useAI && !curKey()){ openSettings(); return; }
+  const msg = useAI
+    ? "ハイブリッドでしおりを作り直します（自動の大枠＋AIの細部）。\nAPIを呼ぶため数秒かかります。続けますか？"
+    : "自動でしおりを作り直します（既存のしおりは置き換わります）。続けますか？";
+  if(!confirm(msg)) return;
+  flashPill(useAI?"✨ しおり再生成中（AI）…":"🔖 しおり再生成中…");
+  $("#btnRegenAI").disabled=true;
+  try{
+    if(doc.format==="html"){
+      const ai = useAI ? (await aiSections(htmlToText(doc.html))).sections : null;
+      const m=buildHtmlBookmarks(doc.html, ai);
+      doc.html=m.html; doc.bookmarks=m.bookmarks;
+    }else{
+      const ai = useAI ? (await aiSections(doc.body)).sections : null;
+      doc.bookmarks=buildTextBookmarks(doc.lines, ai);
+    }
+    persist(); renderContent(doc); renderBookmarks(doc);
+    flashPill("しおりを再生成しました（"+doc.bookmarks.length+"件）");
+  }catch(e){ alert("しおり再生成に失敗: "+e.message); flashPill(""); }
+  finally{ $("#btnRegenAI").disabled=false; }
+}
+
+/* ---------- 貼り付け ---------- */
+async function richPaste(){
+  try{
+    if(navigator.clipboard&&navigator.clipboard.read){
+      const items=await navigator.clipboard.read();
+      for(const it of items){
+        if(it.types.includes("text/html")){
+          const blob=await it.getType("text/html"); const html=await blob.text();
+          if(html&&html.trim()){ const doc=newHtmlDoc($("#inTitle").value, html); openDoc(doc.id); return; }
+        }
+      }
+    }
+    const t=await navigator.clipboard.readText();
+    if(t&&t.trim()){ $("#inBody").value=t; alert("HTMLが取得できなかったため、テキストとして貼り付けました。下の『保存』で進めてください。"); }
+    else alert("クリップボードが空です。Gmail webで本文をコピーしてから押してください。");
+  }catch(e){ alert("クリップボード読み取りに失敗しました。\nテキスト欄に手動で貼り付けてください。\n("+e.message+")"); }
+}
+async function pasteText(){
+  try{ const t=await navigator.clipboard.readText(); if(t&&t.trim()){ $("#inBody").value=t; $("#btnSave").focus(); } else alert("クリップボードが空です。"); }
+  catch(e){ alert("読み取り失敗。テキスト欄を長押し→ペーストしてください。"); }
+}
+
+/* ============================================================
+   OneDrive用 自己完結HTMLの書き出し
+   ============================================================ */
+function buildPortable(doc){
+  let contentHtml, bms;
+  if(doc.format==="html"){
+    contentHtml=doc.html;
+    bms=doc.bookmarks.map(b=>({label:b.label,lvl:b.lvl,id:b.aid}));
+  }else{
+    const head=new Map(doc.bookmarks.map(b=>[b.line,b]));
+    contentHtml=doc.lines.map((raw,i)=>{
+      const t=raw.trim(), hb=head.get(i), idA=hb?` id="b${i}"`:"";
+      if(t==="") return '<div class="ln blank"></div>';
+      if(isSep(t)) return '<div class="ln sep">'+escapeHtml(t)+'</div>';
+      if(hb) return '<div class="ln '+(hb.lvl===1?"h1":"h2")+'"'+idA+'>'+escapeHtml(t)+'</div>';
+      return '<div class="ln"'+idA+'>'+escapeHtml(raw)+'</div>';
+    }).join("");
+    bms=doc.bookmarks.map(b=>({label:b.label,lvl:b.lvl,id:"b"+b.line}));
+  }
+  const json=JSON.stringify({title:doc.title,format:doc.format,content:contentHtml,bookmarks:bms,id:doc.id})
+    .replace(/<\/script/gi,"<\\/script");
+  return PORTABLE_TEMPLATE.replace("/*__DATA__*/null", json).replace("__TITLE__", escapeHtml(doc.title));
+}
+/* 画像をdata:URIへインライン化（書き出しHTMLを単体完結に）。CORS可のURLのみ成功 */
+async function inlineImages(html, onProgress){
+  const cont=document.createElement("div"); cont.innerHTML=html;
+  const imgs=Array.from(cont.querySelectorAll("img"));
+  let done=0, ok=0;
+  for(const img of imgs){
+    const src=img.getAttribute("src")||"";
+    if(/^https?:/i.test(src)){
+      try{
+        const r=await fetch(src,{mode:"cors"});
+        if(r.ok){
+          const blob=await r.blob();
+          if(/^image\//.test(blob.type||"")){
+            const dataUrl=await new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(blob); });
+            img.setAttribute("src", dataUrl);
+            img.removeAttribute("referrerpolicy");
+            ok++;
+          }
+        }
+      }catch(e){ /* CORS不可等 → URLのまま（iOSでは出ない場合あり） */ }
+    }
+    done++; if(onProgress) onProgress(done, imgs.length, ok);
+  }
+  return { html:cont.innerHTML, count:imgs.length, ok };
+}
+
+async function exportDoc(){
+  const doc=getDoc(currentId); if(!doc){ alert("先にドキュメントを開いてください。"); return; }
+  $("#btnExport").disabled=true;
+  let pdoc=doc;
+  try{
+    if(doc.format==="html"){
+      const r=await inlineImages(doc.html,(d,t)=>flashPill("🖼 画像取り込み中… "+d+"/"+t));
+      pdoc={...doc, html:r.html};
+      flashPill(r.count? ("🖼 画像 "+r.ok+"/"+r.count+" 件を埋め込み") : "");
+    }
+    const blob=new Blob([buildPortable(pdoc)],{type:"text/html;charset=utf-8"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download=(doc.title.replace(/[\\/:*?"<>|\r\n]/g,"_").slice(0,50)||"reader")+".html";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+    flashPill("📤 ダウンロードしました（画像入り）→ docs に保存");
+  }catch(e){ alert("書き出しに失敗: "+e.message); }
+  finally{ $("#btnExport").disabled=false; }
+}
+
+/* 自己完結ビューア テンプレート（${ や ` を内部で使わないこと） */
+const PORTABLE_TEMPLATE=
+'<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'+
+'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'+
+'<title>__TITLE__</title><style>'+
+':root{--bg:#f6f5f1;--panel:#fff;--ink:#2b2b2b;--sub:#6b6b6b;--line:#e3e0d8;--accent:#c2410c;--soft:#fde6d8;--mark:#fff3bf}'+
+'body[data-theme=dark]{--bg:#16181c;--panel:#1e2127;--ink:#e6e3dc;--sub:#9aa0a6;--line:#33373f;--accent:#f0834d;--soft:#3a2a20;--mark:#5a4a1e}'+
+'*{box-sizing:border-box}html,body{margin:0;width:100%;max-width:100%;overflow-x:hidden;overscroll-behavior-x:none}'+
+'body{font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,system-ui,sans-serif;background:var(--bg);color:var(--ink);line-height:1.9;touch-action:pan-y}'+
+'header{position:sticky;top:0;display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);z-index:10}'+
+'header b{flex:1;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'+
+'button{font-size:13px;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);cursor:pointer}'+
+'#content{max-width:760px;margin:0 auto;padding:20px 16px 60vh;font-size:16px}'+
+'#content.htmlmode{color:var(--ink);background:transparent;overflow-wrap:anywhere;word-break:break-word}#content.htmlmode *{max-width:100%!important;min-width:0!important;background-color:transparent!important}#content.htmlmode img{height:auto!important;filter:none!important}#content.htmlmode table{width:auto!important;max-width:100%!important;table-layout:auto;border-collapse:collapse}#content.htmlmode td,#content.htmlmode th{white-space:normal!important;word-break:break-word}#content.htmlmode pre{white-space:pre-wrap!important}#content.htmlmode a{color:var(--accent)}'+
+'#content [id]{scroll-margin-top:54px}'+
+'.ln{padding:1px 0;overflow-wrap:anywhere;word-break:break-word}.ln.blank{height:.7em}'+
+'.ln.h1{font-size:21px;font-weight:700;margin:26px 0 6px;border-bottom:2px solid var(--soft);padding-bottom:3px}'+
+'.ln.h2{font-size:17px;font-weight:700;margin:16px 0 4px;color:var(--accent)}.ln.sep{color:#bbb}'+
+'.flash{animation:fl 1.6s ease}@keyframes fl{0%{background:var(--mark)}100%{background:transparent}}'+
+'#panel{position:fixed;inset:0;background:#0006;display:flex;justify-content:flex-end;z-index:20}'+
+'#panel.hidden{display:none}.pbox{background:var(--panel);width:min(360px,86vw);height:100%;overflow:auto;padding:10px}'+
+'.phead{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--sub);padding:4px}'+
+'.it{padding:9px 8px;border-radius:6px;cursor:pointer;font-size:14px;line-height:1.4}.it:hover{background:var(--soft)}.it.l2{padding-left:22px;font-size:13px;color:var(--sub)}'+
+'#fab{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:15}'+
+'#fab button{border-radius:24px;box-shadow:0 2px 8px #0003;padding:10px 14px;background:var(--accent);color:#fff;border:0}'+
+'.hidden{display:none!important}'+
+'</style></head><body>'+
+'<header><button id="th">🌙</button><b id="ttl"></b><button id="open">☰ 目次</button></header>'+
+'<div id="content"></div>'+
+'<div id="fab"><button id="toTop" title="先頭へ">▲</button></div>'+
+'<div id="panel" class="hidden"><div class="pbox"><div class="phead"><span>目次 / しおり</span><button id="close">×</button></div><div id="list"></div></div></div>'+
+'<script>'+
+'var D=/*__DATA__*/null;'+
+'var c=document.getElementById("content");c.className=D.format==="html"?"htmlmode":"";c.innerHTML=D.content;'+
+'document.getElementById("ttl").textContent=D.title;document.title=D.title;'+
+'var list=document.getElementById("list");'+
+'D.bookmarks.forEach(function(b){var r=document.createElement("div");r.className="it l"+b.lvl;r.textContent=b.label;r.onclick=function(){jump(b.id);};list.appendChild(r);});'+
+'function jump(id){var el=document.getElementById(id);if(!el)return;el.scrollIntoView({behavior:"smooth",block:"start"});el.classList.remove("flash");void el.offsetWidth;el.classList.add("flash");hide();}'+
+'function show(){document.getElementById("panel").classList.remove("hidden");}function hide(){document.getElementById("panel").classList.add("hidden");}'+
+'document.getElementById("open").onclick=show;document.getElementById("close").onclick=hide;'+
+'document.getElementById("panel").onclick=function(e){if(e.target.id==="panel")hide();};'+
+'document.getElementById("toTop").onclick=function(){window.scrollTo({top:0,behavior:"smooth"});};'+
+'var TK="rdr_theme";function st(m){document.body.dataset.theme=m;document.getElementById("th").textContent=m==="dark"?"☀️":"🌙";}'+
+'st(localStorage.getItem(TK)||((window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"light"));'+
+'document.getElementById("th").onclick=function(){var n=document.body.dataset.theme==="dark"?"light":"dark";localStorage.setItem(TK,n);st(n);};'+
+'var PK="rdr_pos_"+D.id;var sv=parseInt(localStorage.getItem(PK)||"0",10);if(sv>0)setTimeout(function(){window.scrollTo(0,sv);},60);'+
+'var tm;window.addEventListener("scroll",function(){clearTimeout(tm);tm=setTimeout(function(){localStorage.setItem(PK,String(window.scrollY||document.documentElement.scrollTop));},300);},{passive:true});'+
+'<\/script></body></html>';
+
+/* ---------- イベント ---------- */
+$("#btnNew").onclick=showNew;
+$("#btnCancel").onclick=()=>{ if(currentId) openDoc(currentId); else showNew(); };
+$("#btnRichPaste").onclick=richPaste;
+$("#btnPaste").onclick=pasteText;
+$("#btnSave").onclick=()=>{ const body=$("#inBody").value; if(!body.trim()){ $("#inBody").focus(); return; } openDoc(newDoc($("#inTitle").value, body).id); };
+$("#btnSaveAI").onclick=saveWithAI;
+$("#btnRegenAI").onclick=regenAI;
+$("#btnExport").onclick=exportDoc;
+$("#btnSettings").onclick=openSettings;
+$("#btnSettingsSave").onclick=saveSettings;
+$("#btnSettingsClose").onclick=closeSettings;
+$("#apiProvider").onchange=e=>loadProviderIntoForm(e.target.value);
+$("#docSelect").onchange=e=>{ if(e.target.value) openDoc(e.target.value); };
+$("#btnDelete").onclick=()=>{
+  const doc=getDoc(currentId); if(!doc) return;
+  if(!confirm(`「${doc.title}」を削除します。本文・しおり・読書位置がすべて消えます。よろしいですか？`)) return;
+  docs=docs.filter(d=>d.id!==doc.id); persist(); currentId=null;
+  if(docs.length) openDoc(docs[0].id); else { renderDocSelect(); showNew(); }
+};
+$("#btnDrop").onclick=dropReadMark;
+$("#btnTocToggle").onclick=()=>$("#toc").classList.toggle("collapsed");
+$("#btnTheme").onclick=toggleTheme;
+$("#reader").addEventListener("scroll",onReaderScroll,{passive:true});
+
+/* ---------- 起動 ---------- */
+// 既存のHTML文書から色・背景色を除去（旧バージョンで取り込んだ分も修正）
+(function migrateColors(){
+  let changed=false;
+  docs.forEach(d=>{ if(d.format==="html"&&d.html){ const c=sanitizeHtml(d.html); if(c!==d.html){ d.html=c; changed=true; } } });
+  if(changed) persist();
+})();
+initTheme();
+renderDocSelect();
+if(docs.length) openDoc(docs[0].id); else showNew();
+</script>
+</body>
+</html>
