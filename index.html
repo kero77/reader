@@ -74,6 +74,11 @@
   .bm .del:hover{opacity:1}
   .bm.here{background:#fff3bf; outline:1px solid #f0d98a}
   #reader{flex:1; overflow-y:auto; overflow-x:hidden; padding:24px 18px 60vh; scroll-behavior:smooth; touch-action:pan-y; overscroll-behavior-x:contain}
+  #nudge{
+    max-width:760px; margin:0 auto 14px; padding:11px 14px; font-size:13.5px; line-height:1.6;
+    color:#b04a00; background:#fff3bf; border:1px solid #f0d98a; border-radius:8px; font-weight:700;
+  }
+  body[data-theme="dark"] #nudge{ color:#ffd9a0; background:#4a3a16; border-color:#6a531e; }
   #content{max-width:760px; margin:0 auto; font-size:16px; line-height:1.95}
   /* HTMLモード描画 */
   #content.htmlmode{line-height:1.85; color:var(--ink); background:transparent; overflow-wrap:anywhere; word-break:break-word}
@@ -135,6 +140,11 @@
   }
   #settings .row{display:flex; gap:8px; justify-content:flex-end; margin-top:16px}
   .ai-status{font-size:12px; color:var(--accent); margin-left:4px}
+  .ai-status.warn{
+    color:#b04a00; background:#fff3bf; border:1px solid #f0d98a;
+    border-radius:6px; padding:4px 8px; font-weight:700; margin-left:0;
+  }
+  body[data-theme="dark"] .ai-status.warn{ color:#ffd9a0; background:#4a3a16; border-color:#6a531e; }
   @media(max-width:680px){
     #toc{flex-basis:46vw; position:absolute; z-index:5; height:100%; box-shadow:2px 0 8px #0002}
     #toc.collapsed{display:none}
@@ -150,6 +160,7 @@
   <button id="btnNew" class="primary">＋新規</button>
   <span class="spacer"></span>
   <button id="btnRegenAI" title="AIでしおりを細かく作り直す（要APIキー）">✨しおり再生成</button>
+  <button id="btnToText" title="記号見出し（■●＊）のメルマガをテキストとして取り込み直し、しおりを付け直す">📄 テキストとして取り込み直す</button>
   <button id="btnExport" title="OneDrive用に自己完結HTMLとして書き出し">📤書き出し</button>
   <button id="btnSettings" title="AI整形の設定（APIキー）">⚙️</button>
   <button id="btnTheme" title="ナイトモード切替">🌙</button>
@@ -164,7 +175,10 @@
     <div id="bmList"></div>
   </aside>
 
-  <section id="reader" class="hidden"><div id="content"></div></section>
+  <section id="reader" class="hidden">
+    <div id="nudge" class="hidden">⚠️ しおりがうまく付きませんでした → 上の「📄 テキストとして取り込み直す」を押してください。</div>
+    <div id="content"></div>
+  </section>
 
   <section id="empty">
     <div class="card">
@@ -261,7 +275,8 @@ function escapeHtml(s){ return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"
 /* ============================================================
    テキスト形式：見出し自動検出（ヒューリスティック）
    ============================================================ */
-function isSep(t){ return /^[\s]*[━─=＝*\-‐—]{3,}[\s]*$/.test(t); }
+// 区切り線判定。全角アスタリスク ＊(U+FF0A) も含める（＊＊＊バナーをsep扱いに）
+function isSep(t){ return /^[\s]*[━─=＝*＊\-‐—]{3,}[\s]*$/.test(t); }
 function detectBookmarks(lines){
   const bms=[], n=lines.length;
   const blank=i=>i<0||i>=n||lines[i].trim()==="";
@@ -269,15 +284,20 @@ function detectBookmarks(lines){
     const raw=lines[i], t=raw.trim();
     if(!t||isSep(t)) continue;
     let isHead=false, lvl=2;
-    if(/^[【■◆◇★#]/.test(t)||/^＞|^>/.test(t)){ isHead=true; lvl=/^[■#]/.test(t)?1:2; }
-    else{
+    // マーカー先頭。○(U+25CB)は誤検出が多いため不採用。●◆◇★▶▼◎等に限定
+    if(/^[【■◆◇★●▶▼◎#]/.test(t)||/^＞|^>/.test(t)){
+      // 過検出ガード：マーカー命中行はラベル長の軽い上限を付ける（本文中の長い箇条書きを除外）
+      if(t.length<=60){ isHead=true; lvl=/^[■●#]/.test(t)?1:2; }
+    }
+    if(!isHead && !/^[【■◆◇★●▶▼◎#＞>]/.test(t)){
       const prevSepOrBlank=blank(i-1)||isSep((lines[i-1]||"").trim());
-      const nextBlank=blank(i+1);
+      // 次行が空行、または sep（＊＊＊/━━━ バナー）でも見出しとみなす
+      const nextBlank=blank(i+1)||isSep((lines[i+1]||"").trim());
       const endsSentence=/[。．\.！？]$/.test(t);
       if(prevSepOrBlank&&nextBlank&&!endsSentence&&t.length<=80){ isHead=true; lvl=(t.length<=14)?1:2; }
     }
     if(isHead){
-      let label=t.replace(/^[【■◆◇★#＞>]\s*/,"").replace(/】$/,"").trim();
+      let label=t.replace(/^[【■◆◇★●▶▼◎#＞>]\s*/,"").replace(/】$/,"").trim();
       if(label.length>42) label=label.slice(0,40)+"…";
       bms.push({ line:i, label, type:"auto", lvl, visited:false });
     }
@@ -332,6 +352,10 @@ function newDoc(title, body){
 function newHtmlDoc(title, rawHtml){
   const clean=sanitizeHtml(rawHtml);
   const built=buildHtmlBookmarks(clean, null); // 貼り付け時は自動(大枠)のみ
+  // 自動フォーマット切替は廃止。リッチ貼り付けは常に HTML 文書として保存し、
+  // 画像・表・書式を保持する。しおりがうまく付かない記号見出しメルマガ
+  // （石井メルマガ等）は、文書ビューの「テキストとして取り込み直す」ボタンで
+  // 手動変換できる（convertHtmlToText）。
   const tmp=document.createElement("div"); tmp.innerHTML=built.html;
   let t=(title||"").trim();
   if(!t){
@@ -461,6 +485,12 @@ function openDoc(id){
   $("#empty").classList.add("hidden"); $("#settings").classList.add("hidden");
   $("#reader").classList.remove("hidden");
   $("#btnDrop").style.display = doc.format==="html" ? "none" : "";
+  // 「テキストとして取り込み直す」ボタンは HTML 文書のときだけ表示
+  $("#btnToText").style.display = doc.format==="html" ? "" : "none";
+  // ナッジ：HTML 文書でしおりが極端に少ない（<2 件）ときだけ救済案内を出す。
+  // 十分に付いていれば（テキスト文書含む）hidden に戻す。
+  const nudge=$("#nudge");
+  if(nudge) nudge.classList.toggle("hidden", !(doc.format==="html" && (doc.bookmarks||[]).length<2));
   renderContent(doc); renderBookmarks(doc); renderDocSelect();
   $("#progressPill").textContent=`読了 ${doc.progress||0}%`;
   requestAnimationFrame(()=>{ $("#reader").scrollTop=doc.scroll||0; });
@@ -552,7 +582,18 @@ function buildSystem(g){
     "各項目は label(見出し。必要なら『見出し — 短い要約』)、anchor(そのセクションが始まる箇所の原文を写した完全一致の連続15〜40文字。改変・要約禁止)、"+
     "level(大見出し=1, 小見出し=2)。anchorは必ず本文からそのままコピー。日本語。JSONのみ出力。";
 }
-const NORM=s=>(s||"").replace(/\s/g,"");
+// anchorマッチ用の正規化：空白除去＋全角英数記号の半角化＋先頭装飾記号除去
+// mapSectionsToLines と buildHtmlBookmarks のAIパスが共有（1箇所変更で両経路に効く）
+const NORM=s=>{
+  let v=(s||"")
+    // 全角英数記号（U+FF01〜U+FF5E）を半角へ
+    .replace(/[！-～]/g, c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0))
+    // 全角スペース→半角（後段の空白除去で消える）
+    .replace(/　/g," ")
+    // 先頭の装飾記号・半角スペースを除去（複数連続も剥がす）
+    .replace(/^[■●＊*◆◇★▶▼◎【》#＞> 　]+/u,"");
+  return v.replace(/\s/g,"");
+};
 
 async function apiError(res){
   let m=res.status; try{ const e=await res.json(); m=(e.error&&(e.error.message||e.error))||(e.message)||m; }catch(_){ }
@@ -642,6 +683,64 @@ function htmlToText(html){
   document.body.removeChild(t);
   return text;
 }
+/* 見出し検出用のHTML→テキスト変換。
+   innerText はレンダリング依存で <br><br> や空<div> の「空行」を潰しがちで、
+   detectBookmarks の見出し判定（前後が空行/sep 依存）が総崩れになる。
+   そこで DOM を手動走査し、ブロック境界・<br>・空ブロックを明示的に改行へ落として
+   段落構造（\n\n）を保ったテキストを返す。リッチ貼り付けの記号見出しメルマガ対策。 */
+function htmlToTextForDetect(html){
+  const root=document.createElement("div"); root.innerHTML=html;
+  // ブロックとして扱う要素（境界の前後で改行を入れる）
+  const BLOCK=/^(P|DIV|LI|UL|OL|TR|TABLE|BLOCKQUOTE|SECTION|ARTICLE|HEADER|FOOTER|H[1-6]|PRE|HR)$/;
+  // この要素が pre 文脈（改行を保持すべき）か。<pre> または style に white-space:pre/pre-wrap/pre-line。
+  const isPreEl=el=>{
+    if(el.tagName==="PRE") return true;
+    const s=(el.getAttribute&&el.getAttribute("style"))||"";
+    return /white-space\s*:\s*pre(-wrap|-line)?\b/i.test(s);
+  };
+  let out="";
+  // pre=true の祖先文脈を子に伝播。pre 文脈ではテキストノードの改行を保持する。
+  const walk=(node, pre)=>{
+    for(const ch of node.childNodes){
+      if(ch.nodeType===3){                         // テキストノード
+        // pre 文脈以外は連続空白を1つに、改行はそのまま改行扱いにしない
+        // （改行は要素境界・<br>で表現するため、生テキスト中の改行・タブは空白化）
+        let s=ch.nodeValue.replace(/ /g," ");  // &nbsp;→半角空白
+        if(pre){
+          // pre 文脈：改行は潰さず保持。\r\n を \n に正規化するのみ（タブ・空白はそのまま）
+          s=s.replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+        }else{
+          s=s.replace(/[ \t\r\n]+/g," ");
+        }
+        out+=s;
+      }else if(ch.nodeType===1){                   // 要素ノード
+        const tag=ch.tagName;
+        if(tag==="BR"){ out+="\n"; continue; }
+        if(tag==="SCRIPT"||tag==="STYLE"||tag==="HEAD"){ continue; }
+        const childPre = pre || isPreEl(ch);       // pre 文脈を子へ伝播
+        const isBlock=BLOCK.test(tag);
+        if(isBlock && out && !out.endsWith("\n")) out+="\n";
+        const before=out.length;
+        walk(ch, childPre);
+        // ブロックの中身が空（テキストも子要素も無い、または空白のみ）なら空行を1つ確保
+        const inner=out.slice(before);
+        if(isBlock){
+          if(inner.trim()===""){                    // 空ブロック → 段落区切りの空行
+            // 直前の改行に加えてもう1つ改行を足し、\n\n（空行）を作る
+            if(!out.endsWith("\n\n")) out+= out.endsWith("\n") ? "\n" : "\n\n";
+          }else if(!out.endsWith("\n")){
+            out+="\n";
+          }
+        }
+      }
+    }
+  };
+  walk(root, false);
+  // 仕上げ：行末空白除去、3連以上の改行は \n\n（空行1つ）に圧縮、前後trim
+  out=out.split("\n").map(l=>l.replace(/[ \t]+$/,"").replace(/^[ \t]+/,m=>m)).join("\n");
+  out=out.replace(/\n{3,}/g,"\n\n");
+  return out.replace(/^\n+/,"").replace(/\s+$/,"");
+}
 /* HTMLしおりの統合生成。aiSecs=null なら自動(大枠/lvl1)のみ、
    aiSecs があれば AI(細部/lvl2) を重複排除して追加。{html, bookmarks} を返す。
    ・非表示要素(display:none のプリヘッダ等)を除外
@@ -702,6 +801,57 @@ function buildHtmlBookmarks(html, aiSecs){
       if(!sib) return;
       pushAuto(sib, t+" "+(sib.textContent||"").trim(), 2);
     });
+    // ルールC: テキストマーカー先頭の要素（■●◆◇★▶▼◎ / ＞> / # ）を見出しに
+    //          Gmail由来のプレーンなリッチHTMLでも記号見出しを拾えるようにする
+    const blockEls=Array.from(cont.querySelectorAll("p,div,li,h1,h2,h3,h4,h5,h6"));
+    for(const el of blockEls){
+      const t=(el.textContent||"").trim();
+      if(t.length<2||t.length>60) continue;
+      if(/[。．\.！？]$/.test(t)) continue;                  // 文末で終わる本文は除外
+      if(blockEls.some(o=>o!==el && el.contains(o))) continue; // 最内側を優先（親の重複拾いを防ぐ）
+      let lvl=0;
+      if(/^[■◆◇★●▶▼◎]/.test(t)) lvl=/^[■●]/.test(t)?1:2;
+      else if(/^[＞>]/.test(t)) lvl=2;
+      else if(/^#{1,3}\s/.test(t)) lvl=1;
+      if(!lvl) continue;
+      const label=t.replace(/^[■◆◇★●▶▼◎＞>]\s*/,"").replace(/^#{1,3}\s+/,"").trim();
+      pushAuto(el, label||t, lvl);
+    }
+    // ルールC2: <br>区切りの単一コンテナ対策（Gmailリッチ貼り付けの典型）。
+    //   最内側ブロックの中身を改行(<br>境界・テキスト)で行分割し、
+    //   先頭がマーカーの行が複数あれば、そのコンテナ要素にlvl1アンカーを1本立てる。
+    //   ※ 行単位の精密アンカーは張れないため、詳細しおりは A+B フォールバック（テキスト経路）に委ねる。
+    //   ここはあくまで「H=0 で全く拾えない」状態を回避し、見出しの存在を検知する補強。
+    for(const el of blockEls){
+      if(hElems.has(el)) continue;
+      if(blockEls.some(o=>o!==el && el.contains(o))) continue;   // 最内側のみ
+      // 子に <br> を多く含む＝1要素に複数行詰め込まれているコンテナとみなす
+      const brs=el.querySelectorAll(":scope > br, br");
+      if(brs.length<2) continue;
+      // innerHTML を <br> で割って行テキスト化し、先頭マーカー行を数える
+      const rows=el.innerHTML.split(/<br\s*\/?>/i)
+        .map(h=>{ const d=document.createElement("div"); d.innerHTML=h; return (d.textContent||"").trim(); })
+        .filter(x=>x);
+      const markerRows=rows.filter(r=>/^[■◆◇★●▶▼◎]/.test(r) || /^[＞>]/.test(r) || /^#{1,3}\s/.test(r));
+      if(markerRows.length>=2){
+        const first=markerRows[0];
+        const label=first.replace(/^[■◆◇★●▶▼◎＞>]\s*/,"").replace(/^#{1,3}\s+/,"").trim();
+        pushAuto(el, (label||first).slice(0,60), 1);
+      }
+    }
+    // バナー検出: sep要素 → 非空要素 → sep要素 の並びなら、中央をlvl1見出しに（＊＊＊タイトル＊＊＊）
+    const isSepEl=el=>{ const tt=(el.textContent||"").trim(); return tt && isSep(tt); };
+    for(let i=0;i<blockEls.length;i++){
+      if(!isSepEl(blockEls[i])) continue;
+      let j=i+1;
+      while(j<blockEls.length && !(blockEls[j].textContent||"").trim()) j++;   // 中央（非空）
+      if(j>=blockEls.length || isSepEl(blockEls[j])) continue;
+      let k=j+1;
+      while(k<blockEls.length && !(blockEls[k].textContent||"").trim()) k++;   // 直後
+      if(k>=blockEls.length || !isSepEl(blockEls[k])) continue;
+      const mid=blockEls[j], mt=(mid.textContent||"").trim();
+      if(mt.length>=2 && mt.length<=60) pushAuto(mid, mt, 1);
+    }
 
     // ---- AIパス（細部 / lvl2）----
     if(aiSecs && aiSecs.length){
@@ -796,6 +946,33 @@ async function regenAI(){
     flashPill("しおりを再生成しました（"+doc.bookmarks.length+"件）");
   }catch(e){ alert("しおり再生成に失敗: "+e.message); flashPill(""); }
   finally{ $("#btnRegenAI").disabled=false; }
+}
+
+/* 開いているHTML文書を「テキストとして取り込み直す」。
+   doc.html を段落構造を保ったテキスト（htmlToTextForDetect）に変換し、
+   テキスト経路 detectBookmarks でしおりを付け直して、同一 id のまま
+   format:"text" の文書へ置き換える。元HTMLは doc.htmlBackup に退避（戻せる）。
+   記号見出しメルマガ（■大見出し/●中見出し/＊＊＊バナー）で HTML 経路の
+   しおりがうまく付かないときの救済用。 */
+function convertHtmlToText(){
+  const doc=getDoc(currentId); if(!doc||doc.format!=="html") return;
+  if(!confirm("このメールをテキストとして取り込み直し、しおりを付け直します。\n（画像・表は表示されなくなりますが、元のHTMLは内部に保持され戻せます）\n続けますか？")) return;
+  const body=htmlToTextForDetect(doc.html);
+  const lines=body.replace(/\r/g,"").split("\n");
+  const bms=detectBookmarks(lines);
+  // 同一 id を維持したまま text 文書へ置き換え（title/createdAt は維持、元HTMLは退避）
+  doc.htmlBackup=doc.html;          // 戻せるよう元HTMLを保持
+  delete doc.html;
+  doc.format="text";
+  doc.body=body;
+  doc.lines=lines;
+  doc.bookmarks=bms;
+  doc.scroll=0;                     // 読書位置・進捗はリセット
+  doc.readMark=null;
+  doc.progress=0;
+  persist();
+  openDoc(doc.id);                  // 開き直し（btnToText/btnDrop の表示も更新される）
+  flashPill("📄 テキストとして取り込み直しました（しおり"+bms.length+"件）");
 }
 
 /* ---------- 貼り付け ---------- */
@@ -947,6 +1124,7 @@ $("#btnPaste").onclick=pasteText;
 $("#btnSave").onclick=()=>{ const body=$("#inBody").value; if(!body.trim()){ $("#inBody").focus(); return; } openDoc(newDoc($("#inTitle").value, body).id); };
 $("#btnSaveAI").onclick=saveWithAI;
 $("#btnRegenAI").onclick=regenAI;
+$("#btnToText").onclick=convertHtmlToText;
 $("#btnExport").onclick=exportDoc;
 $("#btnSettings").onclick=openSettings;
 $("#btnSettingsSave").onclick=saveSettings;
