@@ -133,6 +133,7 @@
   #settings .box{
     background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px;
     width:min(460px,94vw); color:var(--ink);
+    max-height:90vh; overflow-y:auto;
   }
   #settings h3{margin:0 0 10px; font-size:16px}
   #settings label{display:block; font-size:12px; color:var(--sub); margin:10px 0 4px}
@@ -152,6 +153,10 @@
     #toc.collapsed{display:none}
     header select{max-width:30vw}
   }
+  #syncBadge[data-state="syncing"]{ animation:spin .8s linear infinite; display:inline-block; }
+  #syncBadge[data-state="ok"]{ color:green; opacity:1; }
+  #syncBadge[data-state="error"]{ color:#c00; opacity:1; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -161,6 +166,7 @@
   <select id="docSelect" title="保存したメールを選択"></select>
   <button id="btnNew" class="primary">＋新規</button>
   <span class="spacer"></span>
+  <span id="syncBadge" title="同期状態（クリックで今すぐ同期）" style="font-size:13px;cursor:pointer;opacity:.6;margin-right:4px" onclick="gistPull()">💾</span>
   <button id="btnRegenAI" title="AIでしおりを細かく作り直す（要APIキー）">✨しおり再生成</button>
   <button id="btnToText" title="記号見出し（■●＊）のメルマガをテキストとして取り込み直し、しおりを付け直す">📄 テキストとして取り込み直す</button>
   <button id="btnExport" title="OneDrive用に自己完結HTMLとして書き出し">📤書き出し</button>
@@ -228,6 +234,17 @@
         <option value="normal">標準（＋主要な小見出し / 目安15〜35）</option>
         <option value="fine">細かい（Q&Aの各設問・小項目まで / 目安30〜70）</option>
       </select>
+      <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
+      <h3 style="margin:0 0 6px;font-size:14px;color:var(--sub)">☁️ クロスデバイス同期（GitHub Gist）</h3>
+      <p class="hint" style="margin:0 0 8px">GitHub Personal Access Token（gist スコープのみ）を入力すると PC&#8596;iPhone で自動同期します。トークンはこの端末にのみ保存されます。</p>
+      <label>GitHub トークン <span class="hint">（ghp_... / gist スコープ）</span></label>
+      <input type="password" id="ghToken" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" autocomplete="off">
+      <label>Gist ID <span class="hint">（初回自動生成。他端末では既存IDを貼り付け）</span></label>
+      <input type="text" id="ghGistId" placeholder="（自動入力）" autocomplete="off">
+      <div style="display:flex;gap:8px;margin:6px 0 12px;flex-wrap:wrap">
+        <button id="btnSyncNow" type="button">🔄 今すぐ同期</button>
+        <button id="btnGistClear" type="button" class="danger">Gist IDをリセット</button>
+      </div>
       <div class="row">
         <button id="btnSettingsSave" class="primary">保存</button>
         <button id="btnSettingsClose">閉じる</button>
@@ -270,7 +287,102 @@ let saveScrollTimer=null;
 
 /* ---------- 永続化 ---------- */
 function load(){ try{ return JSON.parse(localStorage.getItem(LS_KEY))||[]; }catch(e){ return []; } }
-function persist(){ localStorage.setItem(LS_KEY, JSON.stringify(docs)); }
+function persist(){
+  const active = docs.find(d => d.id === currentId);
+  if (active) active.updatedAt = new Date().toISOString();
+  localStorage.setItem(LS_KEY, JSON.stringify(docs));
+  schedulePush();
+}
+/* ============================================================
+   GitHub Gist クロスデバイス同期
+   ============================================================ */
+const GH_TOKEN_KEY  = "mr_gh_token";
+const GH_GIST_KEY   = "mr_gist_id";
+const GIST_FILENAME = "reader_data.json";
+
+function ghToken(){ return (localStorage.getItem(GH_TOKEN_KEY)||"").trim(); }
+function ghGistId(){ return (localStorage.getItem(GH_GIST_KEY)||"").trim(); }
+
+function setSyncStatus(state){
+  const el = document.getElementById("syncBadge");
+  if (!el) return;
+  const map = { idle:"💾", syncing:"🔄", ok:"✓", error:"✗" };
+  el.textContent = map[state] || "💾";
+  el.dataset.state = state;
+  if (state === "ok") setTimeout(()=>{ el.dataset.state="idle"; el.textContent="💾"; }, 3000);
+}
+
+async function gistPush(){
+  const token = ghToken(); if (!token) return;
+  setSyncStatus("syncing");
+  const headers = { "Content-Type":"application/json", "Authorization":"token "+token };
+  const body = JSON.stringify({ files:{ [GIST_FILENAME]:{ content: JSON.stringify(docs) } } });
+  try{
+    let res, gistId = ghGistId();
+    if (gistId){
+      res = await fetch("https://api.github.com/gists/"+gistId, { method:"PATCH", headers, body });
+    } else {
+      res = await fetch("https://api.github.com/gists", { method:"POST", headers,
+        body: JSON.stringify({ description:"しおりリーダー同期データ", public:false,
+          files:{ [GIST_FILENAME]:{ content: JSON.stringify(docs) } } }) });
+      if (res.ok){ const d = await res.json(); localStorage.setItem(GH_GIST_KEY, d.id); }
+    }
+    setSyncStatus(res && res.ok ? "ok" : "error");
+  } catch(e){ setSyncStatus("error"); }
+}
+
+function mergeFromRemote(remoteDocs){
+  if (!Array.isArray(remoteDocs) || !remoteDocs.length) return false;
+  const localMap  = new Map(docs.map(d=>[d.id, d]));
+  const remoteMap = new Map(remoteDocs.map(d=>[d.id, d]));
+  const allIds = [...new Set([...localMap.keys(), ...remoteMap.keys()])];
+  let changed = false;
+  const merged = allIds.map(id => {
+    const ld = localMap.get(id), rd = remoteMap.get(id);
+    if (!ld){ changed = true; return rd; }
+    if (!rd) return ld;
+    const lt = ld.updatedAt||ld.createdAt||"", rt = rd.updatedAt||rd.createdAt||"";
+    if (rt > lt){ changed = true; return rd; }
+    return ld;
+  });
+  if (changed) docs = merged;
+  return changed;
+}
+
+async function gistPull(){
+  const token = ghToken(); if (!token) return;
+  const gistId = ghGistId(); if (!gistId) return;
+  setSyncStatus("syncing");
+  try{
+    const res = await fetch("https://api.github.com/gists/"+gistId,
+      { headers:{ "Authorization":"token "+token } });
+    if (!res.ok){ setSyncStatus("error"); return; }
+    const data = await res.json();
+    const file = (data.files||{})[GIST_FILENAME];
+    if (!file){ setSyncStatus("idle"); return; }
+    const raw = file.truncated ? await (await fetch(file.raw_url)).text() : file.content;
+    const remoteDocs = JSON.parse(raw);
+    const changed = mergeFromRemote(remoteDocs);
+    if (changed){
+      _syncSuppressPush = true;
+      localStorage.setItem(LS_KEY, JSON.stringify(docs));
+      _syncSuppressPush = false;
+      renderDocSelect();
+      const id = currentId && docs.find(d=>d.id===currentId) ? currentId : (docs[0]&&docs[0].id);
+      if (id) openDoc(id); else showNew();
+    }
+    setSyncStatus("ok");
+  } catch(e){ setSyncStatus("error"); }
+}
+
+let _pushTimer = null;
+let _syncSuppressPush = false;
+function schedulePush(){
+  if (_syncSuppressPush || !ghToken()) return;
+  clearTimeout(_pushTimer);
+  _pushTimer = setTimeout(gistPush, 5000);
+}
+
 function uid(){ return "d"+Math.random().toString(36).slice(2,9)+docs.length; }
 function escapeHtml(s){ return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
@@ -549,7 +661,16 @@ function loadProviderIntoForm(p){
   $("#apiKey").value=curKey(p);
   fillModelOptions(p);
 }
-function openSettings(){ loadProviderIntoForm(curProvider()); $("#apiGran").value=curGran(); $("#apiBmMode").value=curBmMode(); $("#settings").classList.remove("hidden"); }
+function openSettings(){
+  loadProviderIntoForm(curProvider());
+  $("#apiGran").value=curGran();
+  $("#apiBmMode").value=curBmMode();
+  const ghT = document.getElementById("ghToken");
+  const ghG = document.getElementById("ghGistId");
+  if (ghT) ghT.value = ghToken();
+  if (ghG) ghG.value = ghGistId();
+  $("#settings").classList.remove("hidden");
+}
 function closeSettings(){ $("#settings").classList.add("hidden"); }
 function saveSettings(){
   const p=$("#apiProvider").value;
@@ -558,6 +679,10 @@ function saveSettings(){
   localStorage.setItem(modelId(p),$("#apiModel").value);
   localStorage.setItem(GRAN_KEY,$("#apiGran").value);
   localStorage.setItem(BMMODE_KEY,$("#apiBmMode").value);
+  const ghT = document.getElementById("ghToken");
+  const ghG = document.getElementById("ghGistId");
+  if (ghT) localStorage.setItem(GH_TOKEN_KEY, ghT.value.trim());
+  if (ghG && ghG.value.trim()) localStorage.setItem(GH_GIST_KEY, ghG.value.trim());
   closeSettings();
 }
 
@@ -1131,6 +1256,14 @@ $("#btnExport").onclick=exportDoc;
 $("#btnSettings").onclick=openSettings;
 $("#btnSettingsSave").onclick=saveSettings;
 $("#btnSettingsClose").onclick=closeSettings;
+const btnSyncNow = document.getElementById("btnSyncNow");
+const btnGistClear = document.getElementById("btnGistClear");
+if (btnSyncNow) btnSyncNow.onclick = ()=>gistPull().then(gistPush);
+if (btnGistClear) btnGistClear.onclick = ()=>{
+  if (!confirm("Gist IDをリセットします。次の同期で新しいGistが作成されます。")) return;
+  localStorage.removeItem(GH_GIST_KEY);
+  const el = document.getElementById("ghGistId"); if (el) el.value="";
+};
 $("#apiProvider").onchange=e=>loadProviderIntoForm(e.target.value);
 $("#docSelect").onchange=e=>{ if(e.target.value) openDoc(e.target.value); };
 $("#btnDelete").onclick=()=>{
@@ -1143,6 +1276,11 @@ $("#btnDrop").onclick=dropReadMark;
 $("#btnTocToggle").onclick=()=>$("#toc").classList.toggle("collapsed");
 $("#btnTheme").onclick=toggleTheme;
 $("#reader").addEventListener("scroll",onReaderScroll,{passive:true});
+document.addEventListener("visibilitychange", ()=>{
+  if (document.visibilityState === "visible") gistPull();
+  else { clearTimeout(_pushTimer); gistPush(); }
+});
+window.addEventListener("beforeunload", ()=>{ clearTimeout(_pushTimer); gistPush(); });
 
 /* ---------- 起動 ---------- */
 // 既存のHTML文書から色・背景色を除去（旧バージョンで取り込んだ分も修正）
@@ -1151,6 +1289,14 @@ $("#reader").addEventListener("scroll",onReaderScroll,{passive:true});
   docs.forEach(d=>{ if(d.format==="html"&&d.html){ const c=sanitizeHtml(d.html); if(c!==d.html){ d.html=c; changed=true; } } });
   if(changed) persist();
 })();
+// updatedAt フィールド追加（既存ドキュメントのマイグレーション）
+(function migrateUpdatedAt(){
+  let changed = false;
+  docs.forEach(d=>{ if (!d.updatedAt){ d.updatedAt = d.createdAt || new Date().toISOString(); changed = true; } });
+  if (changed){ _syncSuppressPush = true; persist(); _syncSuppressPush = false; }
+})();
+// 起動時に Gist から取得（トークン未設定時は即 return）
+gistPull();
 initTheme();
 renderDocSelect();
 if(docs.length) openDoc(docs[0].id); else showNew();
