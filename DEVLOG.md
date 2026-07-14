@@ -1,3 +1,33 @@
+## 2026-07-14 iOS セーフエリア（ダイナミックアイランド）対応
+
+**担当エージェント:** programmer
+
+**変更ファイル:**
+- `C:\Users\Masashi\OneDrive\reader\index.html`（CSSのみ、6行程度の追加）
+
+**何を:**
+ダイナミックアイランド搭載iPhoneでリーダーを開くと、ヘッダー（文書選択ドロップダウン等）がステータスバー/ダイナミックアイランド領域に隠れて操作不能になる不具合を修正。
+
+**調査結果:**
+- `<meta viewport>` の `viewport-fit=cover` と `apple-mobile-web-app-*` 系metaは既に設定済み（今回の不具合はCSS側のみが原因）。
+- 本体アプリの `header{}`（通常フロー先頭要素、`position` 未指定）に `env(safe-area-inset-*)` 対応のpaddingが無かった。
+- 加えて、同ファイル内の「自己完結ビューア書き出しテンプレート」（`PORTABLE_TEMPLATE` 変数、記事を1ファイルのHTMLとして書き出しiOSで参照する機能）にも同型の `header{position:sticky;top:0;...}` があり、同じ症状が起きる作りだったため、`#fab`（右下固定ボタン）・`#panel .pbox`（右端ドロワー）とあわせて修正。
+
+**実装内容:**
+- 本体 `header{}`: `padding-top:calc(8px + env(safe-area-inset-top))` / `padding-left:max(14px, env(safe-area-inset-left))` / `padding-right:max(14px, env(safe-area-inset-right))` を追加。既存の `padding:8px 14px;` を先に書いてあるため、`env()` 非対応環境ではその行がまるごと無視され元のpaddingにフォールバックする（CSS仕様上、未解決の`env()`を含む宣言はプロパティごと無効になり前の宣言が生きる）。
+- `PORTABLE_TEMPLATE` 内の `header` / `.pbox` / `#fab` にも同様の safe-area padding を追加。
+- PC/非対応環境は `env()` が `0px` に解決されるため見た目は無変化（確認済み、`calc(8px+0px)=8px`）。
+
+**なぜ:**
+`viewport-fit=cover` を指定した以上、コンテンツはノッチ/ダイナミックアイランド領域まで描画されるため、固定・先頭配置のUI要素側で `env(safe-area-inset-*)` によるpadding補正が必須。metaだけでは解決しない典型パターン。
+
+**検証:**
+- 構文目視確認のみ。実機（iPhone Safari）での見た目確認はユーザー依頼。
+
+**ハマりどころ・次回への注意:**
+- このファイルには「本体アプリのCSS」と「書き出しHTML用テンプレート文字列（JS内の文字列リテラル）」の2つのCSSが同居しており、後者は `grep` で見落としやすい。UI系の修正をする際は両方を確認すること。
+- リポジトリは git 管理（OneDrive\reader\.git, remote kero77/reader）。push でNetlify (https://long-email-reader.netlify.app/) に自動デプロイされる。
+
 ## 2026-06-30 Obsidian Vault 保存機能を追加（記事→Markdownノート）
 
 **担当エージェント:** programmer
