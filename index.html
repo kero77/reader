@@ -1483,17 +1483,20 @@ function setSyncStatus(state){
   if (state === "ok") setTimeout(()=>{ el.dataset.state="idle"; el.textContent="💾"; }, 3000);
 }
 
-async function gistPush(){
+async function gistPush(opts){
   const token = ghToken(); if (!token) return;
+  // iOS Safari の背面遷移（visibilitychange/beforeunload）対策：keepaliveで実行コンテキスト破棄後も送信継続させる。
+  // body が64KBを超えるとkeepalive fetchは失敗しうるが、既存のtry/catchでerror表示にフォールバックするだけで壊れない。
+  const keepalive = !!(opts && opts.keepalive);
   setSyncStatus("syncing");
   const headers = { "Content-Type":"application/json", "Authorization":"token "+token };
   const body = JSON.stringify({ files:{ [GIST_FILENAME]:{ content: JSON.stringify(docs) } } });
   try{
     let res, gistId = ghGistId();
     if (gistId){
-      res = await fetch("https://api.github.com/gists/"+gistId, { method:"PATCH", headers, body });
+      res = await fetch("https://api.github.com/gists/"+gistId, { method:"PATCH", headers, body, keepalive });
     } else {
-      res = await fetch("https://api.github.com/gists", { method:"POST", headers,
+      res = await fetch("https://api.github.com/gists", { method:"POST", headers, keepalive,
         body: JSON.stringify({ description:"しおりリーダー同期データ", public:false,
           files:{ [GIST_FILENAME]:{ content: JSON.stringify(docs) } } }) });
       if (res.ok){ const d = await res.json(); localStorage.setItem(GH_GIST_KEY, d.id); }
@@ -1502,6 +1505,8 @@ async function gistPush(){
   } catch(e){ setSyncStatus("error"); }
 }
 
+// LWW（updatedAt比較）マージ。削除は「墓標」doc（{id,title,deleted:true,updatedAt}）として扱われるため、
+// 通常docと同じロジックで merged に取り込まれる（新しい方が勝つ＝削除も復活もupdatedAtが決める）。
 function mergeFromRemote(remoteDocs){
   if (!Array.isArray(remoteDocs) || !remoteDocs.length) return false;
   const localMap  = new Map(docs.map(d=>[d.id, d]));
@@ -1539,7 +1544,8 @@ async function gistPull(){
       localStorage.setItem(LS_KEY, JSON.stringify(docs));
       _syncSuppressPush = false;
       renderDocSelect();
-      const id = currentId && docs.find(d=>d.id===currentId) ? currentId : (docs[0]&&docs[0].id);
+      const live = liveDocs();
+      const id = currentId && live.find(d=>d.id===currentId) ? currentId : (live[0]&&live[0].id);
       if (id) openDoc(id); else showNew();
     }
     setSyncStatus("ok");
@@ -1656,18 +1662,21 @@ function newHtmlDoc(title, rawHtml, url){
   docs.unshift(doc); persist(); return doc;
 }
 function getDoc(id){ return docs.find(d=>d.id===id); }
+// 削除済み（墓標: deleted===true）を除いた表示対象一覧。UI/フォールバック選択はすべてこれ経由にする。
+function liveDocs(){ return docs.filter(d=>!d.deleted); }
 
 /* ---------- 描画: ドロップダウン ---------- */
 function renderDocSelect(){
   const sel=$("#docSelect"); sel.innerHTML="";
-  if(docs.length===0){ const o=document.createElement("option"); o.textContent="（保存済みなし）"; o.value=""; sel.appendChild(o); return; }
-  for(const d of docs){
+  const live=liveDocs();
+  if(live.length===0){ const o=document.createElement("option"); o.textContent="（保存済みなし）"; o.value=""; sel.appendChild(o); return; }
+  for(const d of live){
     const o=document.createElement("option"); o.value=d.id;
     const pct=d.progress||0;
     o.textContent=`${pct>=100?"✓ ":""}${d.format==="html"?"🖼 ":""}${d.title}  (${pct}%)`;
     sel.appendChild(o);
   }
-  sel.value=currentId||docs[0].id;
+  sel.value=currentId||live[0].id;
 }
 
 /* ---------- 描画: 本文 ---------- */
@@ -2762,8 +2771,18 @@ $("#docSelect").onchange=e=>{ if(e.target.value) openDoc(e.target.value); };
 $("#btnDelete").onclick=()=>{
   const doc=getDoc(currentId); if(!doc) return;
   if(!confirm(`「${doc.title}」を削除します。本文・しおり・読書位置がすべて消えます。よろしいですか？`)) return;
-  docs=docs.filter(d=>d.id!==doc.id); persist(); currentId=null;
-  if(docs.length) openDoc(docs[0].id); else { renderDocSelect(); showNew(); }
+  // 配列から消すだけでは他端末のPullで復活してしまう（mergeFromRemoteのunionマージが
+  // ローカルに無いIDを無条件復活させるため）。削除の事実を「墓標」として残し、
+  // 重いフィールド（html/lines/bookmarks等）は落として同期先の容量を節約する。
+  const idx=docs.findIndex(d=>d.id===doc.id);
+  if(idx!==-1){
+    docs[idx]={ id:doc.id, title:doc.title, deleted:true, updatedAt:new Date().toISOString() };
+  }
+  currentId=null;
+  persist();
+  gistPush(); // 5秒デバウンス(schedulePush)を待たず即Push。iOS Safariで背面遷移すると間に合わないため。
+  const live=liveDocs();
+  if(live.length) openDoc(live[0].id); else { renderDocSelect(); showNew(); }
 };
 $("#btnDrop").onclick=dropReadMark;
 $("#btnTocToggle").onclick=()=>$("#toc").classList.toggle("collapsed");
@@ -2771,9 +2790,9 @@ $("#btnTheme").onclick=toggleTheme;
 $("#reader").addEventListener("scroll",onReaderScroll,{passive:true});
 document.addEventListener("visibilitychange", ()=>{
   if (document.visibilityState === "visible") gistPull();
-  else { clearTimeout(_pushTimer); gistPush(); }
+  else { clearTimeout(_pushTimer); gistPush({keepalive:true}); }
 });
-window.addEventListener("beforeunload", ()=>{ clearTimeout(_pushTimer); gistPush(); });
+window.addEventListener("beforeunload", ()=>{ clearTimeout(_pushTimer); gistPush({keepalive:true}); });
 
 /* ---------- 起動 ---------- */
 // 既存のHTML文書から色・背景色を除去（旧バージョンで取り込んだ分も修正）
@@ -2788,11 +2807,24 @@ window.addEventListener("beforeunload", ()=>{ clearTimeout(_pushTimer); gistPush
   docs.forEach(d=>{ if (!d.updatedAt){ d.updatedAt = d.createdAt || new Date().toISOString(); changed = true; } });
   if (changed){ _syncSuppressPush = true; persist(); _syncSuppressPush = false; }
 })();
+// 削除の墓標（deleted:true）を30日以上経過したら物理削除（GC）。
+// 同期は十分行き渡っている前提の掃除で、30日超オフラインの端末が復活した場合は再度削除扱いにならない点に注意。
+(function gcTombstones(){
+  const THRESHOLD_MS = 30*24*60*60*1000;
+  const now = Date.now();
+  const before = docs.length;
+  docs = docs.filter(d=>{
+    if (!d.deleted) return true;
+    const t = Date.parse(d.updatedAt || d.createdAt || "");
+    return !(Number.isFinite(t) && (now - t) > THRESHOLD_MS);
+  });
+  if (docs.length !== before){ _syncSuppressPush = true; persist(); _syncSuppressPush = false; }
+})();
 // 起動時に Gist から取得（トークン未設定時は即 return）
 gistPull();
 initTheme();
 renderDocSelect();
-if(docs.length) openDoc(docs[0].id); else showNew();
+{ const live=liveDocs(); if(live.length) openDoc(live[0].id); else showNew(); }
 </script>
 </body>
 </html>

@@ -1,3 +1,44 @@
+## 2026-07-21 クラウド同期の削除復活バグを修正（削除の墓標化）
+
+**担当エージェント:** programmer
+
+**変更ファイル:**
+- `C:\Users\Masashi\OneDrive\reader\index.html`（本体アプリのJS部のみ。約60行の追加・変更）
+
+**何を:**
+記事を削除しても他端末（または自端末の次回Pull）で復活するバグを修正。削除を「配列から消す」のではなく「墓標（tombstone）」オブジェクトに置換し、削除の事実自体を同期対象にした。
+
+**原因（調査済み・修正前の状態）:**
+- 削除ハンドラは `docs=docs.filter(...)` で配列から消すだけで、削除の事実が記録されない。
+- `mergeFromRemote` は「ローカルに無い && リモートにあるID」を無条件復活させるunionマージ（`if (!ld){ changed=true; return rd; }`）。
+- Pushは `schedulePush()` の5秒デバウンスで、iOS Safariでは背面遷移時に飛ばないことがある。
+- 結果、削除は構造的に同期に負ける。
+
+**実装内容:**
+1. `#btnDelete` ハンドラ: docを配列から消す代わりに `{ id, title, deleted:true, updatedAt }` の墓標に置換（`html`/`lines`/`bookmarks`等の重いフィールドは落としてGist容量を節約）。`currentId=null` にしてから `persist()` するため、墓標自身の `updatedAt` は削除ハンドラ内で明示的にセット（`persist()`のcurrentId連動更新には乗らない）。
+2. `mergeFromRemote` は変更なし。LWW（`updatedAt`比較）がそのまま墓標にも効くため、削除が新しければ削除が全端末に伝播する。
+3. `liveDocs()`（`docs.filter(d=>!d.deleted)`）を新設し、UI表示・フォールバック選択を全て置換: `renderDocSelect()`、`gistPull`内のPull後フォールバック選択、削除ハンドラのフォールバック選択、起動時の初期 `openDoc`。`getDoc`/`uid()`/`persist()`内の`docs.find/length`は用途が違う（currentId照合・連番用）ためそのまま。
+4. 削除時は `persist()` 後に `gistPush()` を直接呼び、5秒デバウンス（`schedulePush`）を待たず即Push。
+5. 起動時（`migrateUpdatedAt` IIFEの直後）に `gcTombstones()` IIFEを追加。`deleted && updatedAtが30日以上前` の墓標を物理削除。変更時は `_syncSuppressPush` でPush抑制しつつlocalStorage保存（既存migrateと同じパターン）。
+6. `gistPush(opts)` に `keepalive` オプションを追加し、`visibilitychange`(hidden時)・`beforeunload` からの呼び出しで `{keepalive:true}` を指定。iOS Safariの背面遷移でも送信が継続しやすくなる。body が64KB超だとkeepalive fetchが失敗しうるが、既存の`try/catch`で従来通り"error"表示にフォールバックするだけで壊れない。
+
+**なぜ:**
+Gist同期は「最後に触った方が勝つ」LWW設計だが、削除だけは「更新」ではなく「消滅」なので、そのままでは同期プロトコルに乗らなかった。削除も墓標という一種の"更新"として扱うことで既存のLWWロジックに自然に統合した。
+
+**検証:**
+- `node --check` で本体スクリプトブロック（`<script>`3つ中、最後の約65,000文字＝本体アプリ。前2つはTurndown/turndown-plugin-gfm同梱ライブラリ）の構文OK。
+- `mergeFromRemote`/`liveDocs`/`gcTombstones`のロジックをindex.htmlから抜き出しNode単体テストで検証、全PASS: (1)削除ハンドラで配列長は維持されつつ墓標化・重いフィールド除去、(2)liveDocsが墓標を除外、(3)リモート側の新しい墓標がローカルに伝播し削除が勝つ、(4)ローカルに無い生きたdocは従来通りunion復活する（正常系は壊れていない）、(5)30日超の墓標だけGCされ30日以内・生存中docは残る。
+- 実ブラウザでのGist実push確認（トークンがlocalStorageにある実機依存）はユーザー確認待ち。
+
+**既知のトレードオフ:**
+- 30日以上オフラインだった端末が復帰し、その端末にだけ古い（削除前の）状態が残っている場合、GC後の墓標が消えているため復活しうる（削除の再現に失敗する）。日常利用（PC+iPhoneの定期同期）では問題にならない想定。
+- `beforeunload`/`visibilitychange`の`keepalive`送信もiOS Safari側の実装次第で確実性は100%ではない（あくまで従来の5秒デバウンスより間に合う確率を上げる対策）。
+
+**ハマりどころ・次回への注意:**
+- このファイルは「本体アプリのJS/CSS」と「書き出しHTML用テンプレート文字列 `PORTABLE_TEMPLATE`」が同居している。今回変更した箇所（`renderDocSelect`/`getDoc`/`mergeFromRemote`/`gistPush`/削除ハンドラ/起動時IIFE群）はすべて`PORTABLE_TEMPLATE`文字列（2682〜2728行付近）より前または後ろの本体側で、テンプレート内には該当識別子の重複はないことをgrepで確認済み。
+- `persist()`は`currentId`のdocの`updatedAt`のみ更新する仕組みなので、削除ハンドラでは「`currentId=null`にしてから`persist()`を呼ぶ」順序を崩さないこと（先に`persist()`すると墓標のupdatedAtが上書きされたり、逆に消したはずのdocのupdatedAtが更新されたりする）。
+- リポジトリは git 管理（OneDrive\reader\.git, remote kero77/reader）。push でNetlify (https://long-email-reader.netlify.app/) に自動デプロイされる。
+
 ## 2026-07-14 iOS セーフエリア（ダイナミックアイランド）対応
 
 **担当エージェント:** programmer
