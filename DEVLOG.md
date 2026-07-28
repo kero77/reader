@@ -1,3 +1,103 @@
+## 2026-07-28 Push を非破壊化（Pull成功前のPush禁止＋PATCH直前の再取得マージ）
+
+**担当エージェント:** programmer
+
+**変更ファイル:**
+- `C:\Users\Masashi\OneDrive\reader\index.html`（`gistPush` 全面改修・`gistPull` 簡素化・`gistFetchMerge`/`applyMergedToUi` 新設。+84/-30行）
+
+**症状（実データで確認済みの事故）:**
+2026-07-28 09:19 に Python(reader_sync) が Gist `45bd2b94…` に 3件（生きた7/28号＋墓標2件）を正しく書き込んだ。
+その後リーダーを開くと 💾バッジが ✗（Pull失敗）。10:04（`updated_at` 2026-07-28T01:04:42Z）に**ブラウザが墓標2件だけのローカル docs で PATCH**し、
+Python が入れた 7/28号 doc が Gist から消滅した。
+
+**原因（構造的欠陥・前回エントリの `allowCreate` とは別問題）:**
+`gistPush` は**ローカル docs 配列を丸ごと PATCH で上書き**する設計（read-modify-write ではない last-writer-wins-whole-file）。
+しかも Push は `persist()`→`schedulePush()` の5秒デバウンス・`visibilitychange`・`beforeunload` から自動で走るため、
+**Pull が一度も成功していない状態でも Push できてしまう**。結果、古い/欠けたローカル状態がリモートを破壊する。
+Pull 失敗（オフライン・トークン期限切れ・レート制限）→ その後の自動 Push、で必ず再発する。
+
+**実装内容:**
+1. `_pullOk`（セッションフラグ）を新設。`gistFetchMerge()` がリモートの取得＋JSONパースに成功したときだけ true。
+   既存 Gist への PATCH は `_pullOk===true` が**絶対条件**（false なら PATCH を発行せず `setSyncStatus("error")` で return）。
+   Gist ID 未設定＋`allowCreate`（明示操作）の新規作成経路は「上書きするリモートが無い」ので `_pullOk` を問わず許可し、成功時に `_pullOk=true` にする。
+2. **PATCH 直前に remote を GET して `mergeFromRemote()` でマージしてから書く**（read-modify-write）。
+   GET 失敗・JSON破損時は**PATCHしない**（同期が遅れる方がデータ喪失より安全、という優先順位）。
+3. `_pushPending`: Pull未成功等で見送った Push を記録し、次に Pull が成功したタイミングで `schedulePush()` し直す（送りっぱなしの取りこぼし防止）。
+4. keepalive 経路（`visibilitychange` hidden / `beforeunload`）の設計判断:
+   `await` をまたぐと後続の PATCH が発行されないままページが破棄されうるため、
+   **`_pullOk` かつ最後のマージから60秒以内（`PUSH_MERGE_MAX_AGE_MS`）のときだけ GET を省略して直接 PATCH**。
+   それ以外（マージが古い）は keepalive でも GET→マージ→PATCH を試みる（途中でページが死んでも PATCH は発行されないので破壊は起きない＝安全側）。
+   通常の5秒デバウンス Push が毎回マージしているので、実運用で「60秒以内」は常に満たされ、取りこぼす差分は直近数秒ぶんだけ。
+5. `gistPull()` は `gistFetchMerge(token, gistId, true)` を呼ぶだけに簡素化（Pull と Push でマージ処理を一本化）。
+   Push 経路では `rerender=false` で `renderDocSelect()` のみ（`openDoc()` を呼ばないので読書中のスクロール位置が飛ばない）。
+6. 前回セッションの `allowCreate` ガードはそのまま維持（同コミットに同梱）。
+
+**検証:**
+- 本体 `<script>`（3ブロック中の最後・67,537字）を切り出して `node --check` → 構文OK。`PORTABLE_TEMPLATE` は無変更。
+- 同期ロジックを切り出した Node 単体テスト 23項目すべて PASS:
+  (1) Pull未成功の Push は fetch 自体を出さない（今回の事故の再現テスト）、(2) Pull→ローカル追加→Push で「他端末の新doc・7/28号・自分の新規」がすべて残る、
+  (3) Push直前GET失敗時はPATCHしない、(4) リモートJSON破損時もPATCHしない、(5) keepalive＋直近マージ済みはGET省略で即PATCH、
+  (6) マージが古いkeepaliveはGET→PATCH、(7) `_pullOk`falseならkeepaliveでもPATCHしない、(8) `allowCreate`無しでは新規作成しない、
+  (9) Pull成功で保留Pushが再予約、(10) Push中のマージでは `openDoc` を呼ばない。
+- **Gist への PATCH/POST は一切していない**（現状確認の GET のみ）。
+
+**ハマりどころ・次回への注意:**
+- `_syncSuppressPush` / `schedulePush` は `gistFetchMerge` より**後方**で `let`/`function` 宣言されているが、実行時には必ず宣言後に呼ばれるので TDZ には当たらない（既存コードと同じ前提）。関数の並び替えをする場合は注意。
+- Gist 同期は「ファイル丸ごと上書き」なので、**Pull を挟まない Push は常にデータ破壊の可能性がある**。今後 Push 経路を追加するときは必ず `gistPush()` 経由にすること（`fetch(...PATCH)` を直書きしない）。
+- 事故の切り分けには `GET /gists/{id}` の `updated_at`（＝最後に誰が書いたか）と `GET /gists/{id}/commits` が有効。Python の実行ログ時刻と突き合わせると犯人がすぐ分かる。
+- 7/28号の復旧は `reader_sync\state.json` の `processed_message_ids` から
+  `<1628495750.32162304.1785190206216.tdm@cinnamon.mag2tegami.com>`（7/28 07:10配信）を消して再実行すればよい（Gist側にタイトル重複が無いことは GET で確認済み）。**本セッションでは未実行**。
+
+## 2026-07-28 「記事が1件も表示されない」調査 → 自動Pushでの暗黙のGist新規作成を禁止
+
+**担当エージェント:** programmer
+
+**変更ファイル:**
+- `C:\Users\Masashi\OneDrive\reader\index.html`（`gistPush` / `openSettings` / `btnSyncNow` / `btnGistClear` の計4箇所・7行程度）
+
+**症状:** reader_sync（Python）が 7/28号 を Gist へ正常に書き込んだ（ログ上も成功・実データも健全）のに、リーダーを開くと1件も表示されない。
+
+**調査で判明した事実（Gist API を GET のみで確認）:**
+- `.env` の `GIST_ID=45bd2b9478710195ca5b458eddaa3d26`（2026-06-23作成・本番ストア）の `reader_data.json` は健全。
+  docs 3件 = 生きた doc 1件（7/28号, html 29,879字, bookmarks 29件, キー集合は `newHtmlDoc` と一致）＋ 墓標2件（7/14号・7/21号, `deleted:true`）。
+  制御文字・サロゲート・truncated いずれも無し。Python 側のスキーマ・墓標との相性に問題なし。
+- ところが**同じアカウントに `reader_data.json` を持つ Gist がもう1つ存在した**:
+  `3f0ca73da8b1d586b3a8e17c375357f3`（作成 2026-07-14T01:26:05Z、中身は空配列 `[]`、以後更新なし）。
+- `mergeFromRemote` を実データで単体シミュレーションした結果、ローカルが「空」「墓標2件のみ」「自分の方が新しい」いずれのケースでも
+  正しい Gist を pull すれば `live=1` で表示される。**アプリのマージ/墓標ロジックにバグはない。**
+
+**原因（構造的欠陥）:**
+`gistPush` は `ghGistId()` が空だと `POST /gists` で**新しい Gist を黙って作り、その ID を localStorage に固定**していた。
+一方 Push は `persist()` の5秒デバウンス・`visibilitychange`・`beforeunload` から自動で走るため、
+「Gist IDをリセット」を押した直後や localStorage が飛んだ直後に、ユーザーが何もしなくても
+**空の docs（`[]`）で新しい Gist が生成され、その端末だけが空ストアに再バインドされる**。
+上記 `3f0ca73d…` は 40秒間に3リビジョンという典型的なデバウンスPushの痕跡で、まさにこれ。
+その端末では以後どれだけ Python が本番 Gist に書いても空 Gist を pull し続けるので何も表示されない
+（`mergeFromRemote` は空配列リモートに対し `changed=false` で即 return するため、警告すら出ない）。
+
+**実装内容:**
+1. `gistPush(opts)` に `allowCreate` を追加。Gist ID が空のときの `POST`（新規作成）は `allowCreate:true` のときだけ許可し、
+   自動Push経路では作成せず `setSyncStatus("error")` で返す（✗バッジで気づける）。
+2. 新規作成に成功した場合は `alert()` で新しい Gist ID を表示（他端末へ同じIDを設定するよう促す）。
+3. `btnSyncNow` を `.then(gistPush)` → `.then(()=>gistPush({allowCreate:true}))` に変更。
+   ついでに `.then(gistPush)` が Promise の解決値を第1引数（=opts）として渡してしまう潜在バグも解消。
+4. `openSettings()` で Gist ID 未設定時に placeholder に警告文を出す。`btnGistClear` の confirm 文言も実挙動に合わせて修正。
+
+**検証:**
+- 本体 `<script>`（最後のブロック, 65,360字）を `node --check` で構文OK。
+- `mergeFromRemote` の Node 単体シミュレーション（実 Gist データ使用）で表示ロジックの正常性を確認。
+- **Gist への書き込み（PATCH/POST）は一切行っていない。git commit / push も未実施＝Netlify 未デプロイ。**
+
+**ユーザー側で必要な確認・復旧手順:**
+1. 表示されない端末でリーダーを開き ⚙設定 → Gist ID 欄を確認。
+   `3f0ca73da8b1d586b3a8e17c375357f3` または空 なら本件。`45bd2b9478710195ca5b458eddaa3d26` に書き換えて保存 →「🔄 今すぐ同期」。
+2. 空 Gist `3f0ca73d…` は誤バインドの再発防止のため削除推奨（中身は `[]` なので消してよい）。
+
+**ハマりどころ・次回への注意:**
+- 「Gist IDリセット」は**押した瞬間ではなく次の自動Pushで**新Gistを作る遅延爆弾だった。今回の修正で明示操作限定になった。
+- 端末ごとに localStorage は別（Netlify の https オリジンと `file://` でも別物）。「同期が効かない」系はまず設定画面の Gist ID を突き合わせること。
+- Gist の事故調査には `GET /gists/{id}/commits`（リビジョン履歴）と `GET /gists`（同名ファイルの重複Gist検出）が非常に有効。
+
 ## 2026-07-21 クラウド同期の削除復活バグを修正（削除の墓標化）
 
 **担当エージェント:** programmer

@@ -1483,26 +1483,94 @@ function setSyncStatus(state){
   if (state === "ok") setTimeout(()=>{ el.dataset.state="idle"; el.textContent="💾"; }, 3000);
 }
 
+/* 同期の破壊防止フラグ。
+   _pullOk: このセッションでリモートの読み取り（Pull/マージ）に一度でも成功したか。
+            false のままローカル docs を PATCH すると、他端末やPythonが入れた doc を消してしまうため Push を禁止する。
+   _lastMergeAt: 最後にリモートとマージできた時刻（keepalive経路で往復を省略してよいかの判定に使う）。 */
+let _pullOk = false;
+let _lastMergeAt = 0;
+let _pushPending = false;              // Pull未成功などでPushを見送った未送信の変更があるか
+const PUSH_MERGE_MAX_AGE_MS = 60000;   // この時間内にマージ済みなら keepalive 経路は GET を省略してよい
+
+/* リモートを取得してローカルへLWWマージする（read-modify-write の read 部分）。
+   成功時 true。rerender=true のときだけ本文の開き直しまで行う
+   （Push経路では読書中のスクロール位置を乱さないよう false でドロップダウン更新のみ）。 */
+async function gistFetchMerge(token, gistId, rerender){
+  const res = await fetch("https://api.github.com/gists/"+gistId,
+    { headers:{ "Authorization":"token "+token } });
+  if (!res.ok) return false;
+  const data = await res.json();
+  const file = (data.files||{})[GIST_FILENAME];
+  if (!file){
+    // Gistは存在するが同期ファイルがまだ無い＝上書きで失うものが無いので Push を許可する
+    _pullOk = true; _lastMergeAt = Date.now();
+    return true;
+  }
+  const raw = file.truncated ? await (await fetch(file.raw_url)).text() : file.content;
+  const remoteDocs = JSON.parse(raw);   // 壊れたJSONはthrow→呼び出し側でerror扱い（PATCHは絶対に走らせない）
+  const changed = mergeFromRemote(remoteDocs);
+  if (changed){
+    _syncSuppressPush = true;
+    localStorage.setItem(LS_KEY, JSON.stringify(docs));
+    _syncSuppressPush = false;
+    if (rerender) applyMergedToUi(); else renderDocSelect();
+  }
+  _pullOk = true; _lastMergeAt = Date.now();
+  return true;
+}
+
+function applyMergedToUi(){
+  renderDocSelect();
+  const live = liveDocs();
+  const id = currentId && live.find(d=>d.id===currentId) ? currentId : (live[0]&&live[0].id);
+  if (id) openDoc(id); else showNew();
+}
+
 async function gistPush(opts){
   const token = ghToken(); if (!token) return;
   // iOS Safari の背面遷移（visibilitychange/beforeunload）対策：keepaliveで実行コンテキスト破棄後も送信継続させる。
   // body が64KBを超えるとkeepalive fetchは失敗しうるが、既存のtry/catchでerror表示にフォールバックするだけで壊れない。
   const keepalive = !!(opts && opts.keepalive);
-  setSyncStatus("syncing");
+  const allowCreate = !!(opts && opts.allowCreate);
   const headers = { "Content-Type":"application/json", "Authorization":"token "+token };
-  const body = JSON.stringify({ files:{ [GIST_FILENAME]:{ content: JSON.stringify(docs) } } });
+  const gistId = ghGistId();
+  setSyncStatus("syncing");
   try{
-    let res, gistId = ghGistId();
-    if (gistId){
-      res = await fetch("https://api.github.com/gists/"+gistId, { method:"PATCH", headers, body, keepalive });
-    } else {
-      res = await fetch("https://api.github.com/gists", { method:"POST", headers, keepalive,
+    if (!gistId){
+      // 自動Pushでの暗黙のGist新規作成は禁止（空Gistへの取り違え事故防止）。作成は設定画面の「今すぐ同期」からのみ。
+      if (!allowCreate){ setSyncStatus("error"); _pushPending = true; return; }
+      const res = await fetch("https://api.github.com/gists", { method:"POST", headers, keepalive,
         body: JSON.stringify({ description:"しおりリーダー同期データ", public:false,
           files:{ [GIST_FILENAME]:{ content: JSON.stringify(docs) } } }) });
-      if (res.ok){ const d = await res.json(); localStorage.setItem(GH_GIST_KEY, d.id); }
+      if (res.ok){
+        const d = await res.json();
+        localStorage.setItem(GH_GIST_KEY, d.id);
+        // 自分で作ったGist＝リモートに失うデータが無いので、以後のPushを許可する
+        _pullOk = true; _lastMergeAt = Date.now(); _pushPending = false;
+        alert("新しい同期Gistを作成しました。\nGist ID: " + d.id + "\n他の端末にも同じIDを設定してください。");
+      }
+      setSyncStatus(res && res.ok ? "ok" : "error");
+      return;
     }
+    // 既存Gistの上書きは「このセッションで一度でもリモートを読めた」ことが絶対条件。
+    // Pull失敗直後に古い/欠けたローカル docs で PATCH すると、他端末やPythonが入れた doc を消す（2026-07-28の事故）。
+    if (!_pullOk){ setSyncStatus("error"); _pushPending = true; return; }
+    const fresh = (Date.now() - _lastMergeAt) < PUSH_MERGE_MAX_AGE_MS;
+    if (!(keepalive && fresh)){
+      // 通常経路：PATCH直前にリモートを取り直してマージ（read-modify-write）。
+      // 読めなかった場合はPATCHせずerror（同期が遅れる方が、データを失うより安全）。
+      const ok = await gistFetchMerge(token, gistId, false);
+      if (!ok){ setSyncStatus("error"); _pushPending = true; return; }
+    }
+    // keepalive経路（背面遷移・離脱時）で直近マージ済みの場合だけ GET を省略して直接PATCHする。
+    // 理由：unload直前は await をまたぐと後続のPATCHが発行されないまま破棄されうるため。
+    // 60秒以内にマージ済みならその間のリモート変更を取りこぼす可能性は残るが、5秒デバウンスの通常Pushが
+    // 毎回マージしているので実運用では直近数秒ぶんの差分しか無い。
+    const body = JSON.stringify({ files:{ [GIST_FILENAME]:{ content: JSON.stringify(docs) } } });
+    const res = await fetch("https://api.github.com/gists/"+gistId, { method:"PATCH", headers, body, keepalive });
+    if (res && res.ok) _pushPending = false;
     setSyncStatus(res && res.ok ? "ok" : "error");
-  } catch(e){ setSyncStatus("error"); }
+  } catch(e){ setSyncStatus("error"); _pushPending = true; }
 }
 
 // LWW（updatedAt比較）マージ。削除は「墓標」doc（{id,title,deleted:true,updatedAt}）として扱われるため、
@@ -1530,25 +1598,10 @@ async function gistPull(){
   const gistId = ghGistId(); if (!gistId) return;
   setSyncStatus("syncing");
   try{
-    const res = await fetch("https://api.github.com/gists/"+gistId,
-      { headers:{ "Authorization":"token "+token } });
-    if (!res.ok){ setSyncStatus("error"); return; }
-    const data = await res.json();
-    const file = (data.files||{})[GIST_FILENAME];
-    if (!file){ setSyncStatus("idle"); return; }
-    const raw = file.truncated ? await (await fetch(file.raw_url)).text() : file.content;
-    const remoteDocs = JSON.parse(raw);
-    const changed = mergeFromRemote(remoteDocs);
-    if (changed){
-      _syncSuppressPush = true;
-      localStorage.setItem(LS_KEY, JSON.stringify(docs));
-      _syncSuppressPush = false;
-      renderDocSelect();
-      const live = liveDocs();
-      const id = currentId && live.find(d=>d.id===currentId) ? currentId : (live[0]&&live[0].id);
-      if (id) openDoc(id); else showNew();
-    }
-    setSyncStatus("ok");
+    const ok = await gistFetchMerge(token, gistId, true);
+    setSyncStatus(ok ? "ok" : "error");
+    // Pull未成功で見送っていたローカル変更があれば、ここで改めてPush（マージ込み）を予約する
+    if (ok && _pushPending){ _pushPending = false; schedulePush(); }
   } catch(e){ setSyncStatus("error"); }
 }
 
@@ -1853,6 +1906,7 @@ function openSettings(){
   const ghG = document.getElementById("ghGistId");
   if (ghT) ghT.value = ghToken();
   if (ghG) ghG.value = ghGistId();
+  if (ghG && !ghGistId()) ghG.placeholder = "未設定（この状態で同期すると新規Gistが作られます）";
   // Obsidian 設定をフォームへ反映
   const oAtt = document.getElementById("obsAttFolder");
   const oTag = document.getElementById("obsTags");
@@ -2760,9 +2814,9 @@ $("#btnSettingsSave").onclick=saveSettings;
 $("#btnSettingsClose").onclick=closeSettings;
 const btnSyncNow = document.getElementById("btnSyncNow");
 const btnGistClear = document.getElementById("btnGistClear");
-if (btnSyncNow) btnSyncNow.onclick = ()=>gistPull().then(gistPush);
+if (btnSyncNow) btnSyncNow.onclick = ()=>gistPull().then(()=>gistPush({allowCreate:true}));
 if (btnGistClear) btnGistClear.onclick = ()=>{
-  if (!confirm("Gist IDをリセットします。次の同期で新しいGistが作成されます。")) return;
+  if (!confirm("Gist IDをリセットします。この後「今すぐ同期」を押した時にだけ新しいGistが作成されます（自動同期では作成されません）。")) return;
   localStorage.removeItem(GH_GIST_KEY);
   const el = document.getElementById("ghGistId"); if (el) el.value="";
 };
