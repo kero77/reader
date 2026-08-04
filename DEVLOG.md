@@ -1,3 +1,28 @@
+## 2026-08-04 ブラウザ同期失敗の切り分け（同期失敗理由の可視化＋CORS防御を追加）
+
+**担当エージェント:** programmer
+
+**事象:** PCブラウザで同期ボタン押下時「✗が一瞬変わってもとに戻る」＝即失敗。一方 `mailmag_to_reader.py` の proxy モード（GET）は成功していた。
+
+**切り分け結果（本番エンドポイントに実アクセスして検証。PATCHは一切実行せず）:**
+- ページ本体 `https://long-email-reader.netlify.app/` と `/api/gist` は**同一オリジン**であることを確認（`curl -L` で最終URL一致）。ブラウザのCORSプリフライトはそもそも同一オリジンでは発生しないため、**CORS/プリフライトは今回の直接原因ではない**と判断（最有力候補として検証したが棄却）。
+- `OPTIONS /api/gist`・キー無し/ダミーキーでの `GET /api/gist` はいずれも `401 {"error":"unauthorized"}`。認証チェック自体は仕様どおり機能している。
+- CSPメタタグ・Service Workerは存在せず（登録コード自体がない）、それらによるブロックも該当なし。
+- 正規キーでの200確認はAPP_KEY実値に触れられないため未検証（ユーザー確認事項として残す）。有力な残り仮説は「ブラウザに保存されたアプリキーが実際は空/不一致（ブラウザのパスワードマネージャ誤補完・入力ミス等）」。
+
+**実施した修正:**
+1. `index.html`（`setSyncStatus`/`gistFetchMerge`/`gistPull`/`gistPush`）: 同期失敗時にバッジの`title`属性（ホバーで表示）とconsole.errorに具体的な失敗理由（アプリキー未設定／HTTPステータス／401ならその旨／ネットワークエラー本文）を出すよう変更。`_pullOk`ガード・read-modify-write・keepalive・墓標マージの制御フロー自体は一切変更していない（診断用の副変数`_lastSyncError`を追加しただけ）。
+2. `netlify/functions/gist.mjs`: `OPTIONS`を204で即応答するハンドラと`Access-Control-Allow-*`ヘッダを全レスポンスに追加（防御的措置。現状は同一オリジンのため不要だが、カスタムドメイン併用等で将来オリジンが分岐した場合に備える）。認証ロジック（`x-app-key`のタイミング安全比較）・GET/PATCHの処理内容は変更なし。
+
+**デプロイ・検証:** `node --check`（gist.mjs）＋index.html内3つの`<script>`ブロックをそれぞれ抽出して`node --check` PASS。コミット後push→Netlify自動デプロイを確認。本番で `OPTIONS /api/gist` が204＋`Access-Control-Allow-Origin`付きで返ることを確認、GET/PATCHの401挙動が変わっていないことも再確認。
+
+**ユーザーが次にやること:**
+1. 設定画面のアプリキー欄を一度空にして、`.env`（`C:\Users\Masashi\Documents\Scripts\reader_sync\.env`）のAPP_KEYと**同じ値をコピペ**して保存し直す（ブラウザのパスワードマネージャの誤補完を避けるため、貼り付け後に欄の中身を目視確認）。
+2. 保存後「今すぐ同期」を押し、失敗したらバッジにマウスホバー（PCなら）→ title に出る具体的理由を確認。またはF12→Consoleタブに`[gist sync] ...`で理由が出る。F12→Networkタブで`/api/gist`のステータスコード（401なら鍵不一致、その他ならサーバー/ネットワーク側）も確認可能。
+3. 直っても直らなくても、次回はホバー/コンソールの理由メッセージで一次切り分けが可能になったはず。
+
+---
+
 ## 2026-08-04 Netlifyデプロイ実施・接続確認（無認証GET→401を確認）
 
 **担当エージェント:** programmer

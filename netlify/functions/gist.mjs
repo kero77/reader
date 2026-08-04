@@ -31,26 +31,48 @@ function safeEqual(a, b) {
   return timingSafeEqual(bufA, bufB);
 }
 
-function jsonResponse(status, obj) {
+// CORS用ヘッダ。本番は index.html と同一オリジンから叩くため通常は不要だが、
+// カスタムドメイン併用やデプロイプレビューなど別オリジンから呼ばれた場合でも
+// ブラウザのプリフライト(OPTIONS)とレスポンスが弾かれないようにする防御的措置。
+// Origin丸ごと反映(*ではなく)＋Varyで、認証（x-app-keyの一致）自体は従来どおり必須のまま。
+function corsHeaders(req) {
+  const origin = req.headers.get("origin") || "*";
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "GET, PATCH, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, x-app-key",
+    "Vary": "Origin",
+  };
+}
+
+function jsonResponse(status, obj, extraHeaders) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(extraHeaders || {}) },
   });
 }
 
 export default async (req) => {
+  // プリフライトはヘッダ検証（x-app-key）をスキップして即204で返す。
+  // ここで認証チェックに巻き込むと、ブラウザが送らないx-app-keyヘッダ無しのOPTIONSが
+  // 常に401になり、実リクエスト（GET/PATCH）が発火する前に失敗したように見えてしまう。
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders(req) });
+  }
+
+  const cors = corsHeaders(req);
   const appKeyEnv = process.env.APP_KEY || "";
   const githubToken = process.env.GITHUB_TOKEN || "";
   const gistId = process.env.GIST_ID || "";
 
   if (!appKeyEnv || !githubToken || !gistId) {
     // サーバー側の設定不備。原因の詳細はクライアントに出さない。
-    return jsonResponse(500, { error: "server not configured" });
+    return jsonResponse(500, { error: "server not configured" }, cors);
   }
 
   const provided = req.headers.get("x-app-key") || "";
   if (!provided || !safeEqual(provided, appKeyEnv)) {
-    return jsonResponse(401, { error: "unauthorized" });
+    return jsonResponse(401, { error: "unauthorized" }, cors);
   }
 
   const upstreamHeaders = {
@@ -61,22 +83,22 @@ export default async (req) => {
   try {
     if (req.method === "GET") {
       const res = await fetch(`${GITHUB_API}/gists/${gistId}`, { headers: upstreamHeaders });
-      if (!res.ok) return jsonResponse(res.status, { error: "github get failed" });
+      if (!res.ok) return jsonResponse(res.status, { error: "github get failed" }, cors);
       const data = await res.json();
       const file = (data.files || {})[GIST_FILENAME];
       if (!file) {
         // ファイルがまだ無い（空のGist）。空配列相当を返す。
-        return jsonResponse(200, { files: { [GIST_FILENAME]: { content: "[]", truncated: false } } });
+        return jsonResponse(200, { files: { [GIST_FILENAME]: { content: "[]", truncated: false } } }, cors);
       }
       let content = file.content;
       if (file.truncated) {
         // 1MB超のGistはcontentが省略されraw_urlのみ返る。クライアントに直接触らせず、
         // サーバー側で解決してから通常のcontent文字列として返す。
         const rawRes = await fetch(file.raw_url, { headers: upstreamHeaders });
-        if (!rawRes.ok) return jsonResponse(502, { error: "github raw fetch failed" });
+        if (!rawRes.ok) return jsonResponse(502, { error: "github raw fetch failed" }, cors);
         content = await rawRes.text();
       }
-      return jsonResponse(200, { files: { [GIST_FILENAME]: { content, truncated: false } } });
+      return jsonResponse(200, { files: { [GIST_FILENAME]: { content, truncated: false } } }, cors);
     }
 
     if (req.method === "PATCH") {
@@ -88,12 +110,12 @@ export default async (req) => {
         headers: { ...upstreamHeaders, "Content-Type": "application/json" },
         body: bodyText,
       });
-      if (!res.ok) return jsonResponse(res.status, { error: "github patch failed" });
-      return jsonResponse(200, { ok: true });
+      if (!res.ok) return jsonResponse(res.status, { error: "github patch failed" }, cors);
+      return jsonResponse(200, { ok: true }, cors);
     }
 
-    return jsonResponse(405, { error: "method not allowed" });
+    return jsonResponse(405, { error: "method not allowed" }, cors);
   } catch (e) {
-    return jsonResponse(502, { error: "proxy error" });
+    return jsonResponse(502, { error: "proxy error" }, cors);
   }
 };

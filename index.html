@@ -1475,12 +1475,19 @@ const OBS_IDB_NAME = "mr_obsidian", OBS_IDB_STORE = "handles", OBS_IDB_KEY = "va
 
 function appKey(){ return (localStorage.getItem(APP_KEY_KEY)||"").trim(); }
 
-function setSyncStatus(state){
+function setSyncStatus(state, detail){
   const el = document.getElementById("syncBadge");
   if (!el) return;
   const map = { idle:"💾", syncing:"🔄", ok:"✓", error:"✗" };
   el.textContent = map[state] || "💾";
   el.dataset.state = state;
+  // 失敗理由をtitle属性（ホバーで見える）とconsoleに残す。F12コンソールでも追跡できるように。
+  if (state === "error"){
+    el.title = "同期失敗: " + (detail || "不明なエラー") + "（クリックで再試行）";
+    console.error("[gist sync] " + (detail || "unknown error"));
+  } else if (state === "ok"){
+    el.title = "同期状態（クリックで今すぐ同期）";
+  }
   if (state === "ok") setTimeout(()=>{ el.dataset.state="idle"; el.textContent="💾"; }, 3000);
 }
 
@@ -1496,10 +1503,24 @@ const PUSH_MERGE_MAX_AGE_MS = 60000;   // この時間内にマージ済みな�
 /* リモートを取得してローカルへLWWマージする（read-modify-write の read 部分）。
    成功時 true。rerender=true のときだけ本文の開き直しまで行う
    （Push経路では読書中のスクロール位置を乱さないよう false でドロップダウン更新のみ）。 */
+// 直近の失敗理由（画面表示・console用。判定ロジックには使わない診断専用の副変数）。
+let _lastSyncError = "";
+
 async function gistFetchMerge(rerender){
-  const key = appKey(); if (!key) return false;
-  const res = await fetch(GIST_PROXY_URL, { headers:{ "x-app-key":key } });
-  if (!res.ok) return false;
+  const key = appKey();
+  if (!key){ _lastSyncError = "アプリキー未設定（設定画面で入力・保存してください）"; return false; }
+  let res;
+  try{
+    res = await fetch(GIST_PROXY_URL, { headers:{ "x-app-key":key } });
+  } catch(e){
+    _lastSyncError = "ネットワークエラー（fetch失敗）: " + (e && e.message || e);
+    return false;
+  }
+  if (!res.ok){
+    _lastSyncError = "GET " + GIST_PROXY_URL + " が HTTP " + res.status +
+      (res.status === 401 ? "（アプリキー不一致。Netlifyの環境変数APP_KEYと同じ値か確認）" : "");
+    return false;
+  }
   const data = await res.json();
   const file = (data.files||{})[GIST_FILENAME];
   if (!file){
@@ -1537,23 +1558,31 @@ async function gistPush(opts){
   try{
     // 既存データの上書きは「このセッションで一度でもリモートを読めた」ことが絶対条件。
     // Pull失敗直後に古い/欠けたローカル docs で PATCH すると、他端末やPythonが入れた doc を消す（2026-07-28の事故）。
-    if (!_pullOk){ setSyncStatus("error"); _pushPending = true; return; }
+    if (!_pullOk){ _lastSyncError = "初回Pull未成功のためPush見送り（同期ボタンでPullからやり直してください）"; setSyncStatus("error", _lastSyncError); _pushPending = true; return; }
     const fresh = (Date.now() - _lastMergeAt) < PUSH_MERGE_MAX_AGE_MS;
     if (!(keepalive && fresh)){
       // 通常経路：PATCH直前にリモートを取り直してマージ（read-modify-write）。
       // 読めなかった場合はPATCHせずerror（同期が遅れる方が、データを失うより安全）。
       const ok = await gistFetchMerge(false);
-      if (!ok){ setSyncStatus("error"); _pushPending = true; return; }
+      if (!ok){ setSyncStatus("error", _lastSyncError); _pushPending = true; return; }
     }
     // keepalive経路（背面遷移・離脱時）で直近マージ済みの場合だけ GET を省略して直接PATCHする。
     // 理由：unload直前は await をまたぐと後続のPATCHが発行されないまま破棄されうるため。
     // 60秒以内にマージ済みならその間のリモート変更を取りこぼす可能性は残るが、5秒デバウンスの通常Pushが
     // 毎回マージしているので実運用では直近数秒ぶんの差分しか無い。
     const body = JSON.stringify({ files:{ [GIST_FILENAME]:{ content: JSON.stringify(docs) } } });
-    const res = await fetch(GIST_PROXY_URL, { method:"PATCH", headers, body, keepalive });
+    let res;
+    try{
+      res = await fetch(GIST_PROXY_URL, { method:"PATCH", headers, body, keepalive });
+    } catch(e){
+      _lastSyncError = "ネットワークエラー（PATCH fetch失敗）: " + (e && e.message || e);
+      setSyncStatus("error", _lastSyncError); _pushPending = true; return;
+    }
     if (res && res.ok) _pushPending = false;
-    setSyncStatus(res && res.ok ? "ok" : "error");
-  } catch(e){ setSyncStatus("error"); _pushPending = true; }
+    else _lastSyncError = "PATCH " + GIST_PROXY_URL + " が HTTP " + (res && res.status) +
+      (res && res.status === 401 ? "（アプリキー不一致）" : "");
+    setSyncStatus(res && res.ok ? "ok" : "error", res && res.ok ? null : _lastSyncError);
+  } catch(e){ _lastSyncError = "Push例外: " + (e && e.message || e); setSyncStatus("error", _lastSyncError); _pushPending = true; }
 }
 
 // LWW（updatedAt比較）マージ。削除は「墓標」doc（{id,title,deleted:true,updatedAt}）として扱われるため、
@@ -1581,10 +1610,10 @@ async function gistPull(){
   setSyncStatus("syncing");
   try{
     const ok = await gistFetchMerge(true);
-    setSyncStatus(ok ? "ok" : "error");
+    setSyncStatus(ok ? "ok" : "error", ok ? null : _lastSyncError);
     // Pull未成功で見送っていたローカル変更があれば、ここで改めてPush（マージ込み）を予約する
     if (ok && _pushPending){ _pushPending = false; schedulePush(); }
-  } catch(e){ setSyncStatus("error"); }
+  } catch(e){ _lastSyncError = "Pull例外: " + (e && e.message || e); setSyncStatus("error", _lastSyncError); }
 }
 
 let _pushTimer = null;
