@@ -1,3 +1,28 @@
+## 2026-08-04 Netlifyデプロイ実施・接続確認（無認証GET→401を確認）
+
+**担当エージェント:** programmer
+
+**前提:** ユーザーがNetlify管理画面で環境変数 `GITHUB_TOKEN`/`GIST_ID`/`APP_KEY` の登録を完了。
+
+**実施内容:**
+1. `C:\Users\Masashi\OneDrive\reader` の git 状態確認。remote は `origin = https://github.com/kero77/reader.git`（既存。過去のDEVLOGエントリでも「push でNetlify自動デプロイされる」と明記済み）、ブランチ `main`。`.netlify` CLIリンクは無いが、Netlify側のWeb UIでこのGitHubリポジトリ/mainブランチに紐付いた自動デプロイ運用と判断（過去4回のpushで同様に反映されている実績あり）。
+2. 未コミットだった `index.html`（同期系のプロキシ化差分）・`DEVLOG.md`（前セッションの記述）・新規 `netlify.toml`・`netlify\functions\gist.mjs` をコミット（`706cc0d`）してpush。
+3. デプロイ完了をポーリングで確認（push後 `/api/gist` が404→401に変わった時点でデプロイ反映と判断。約20〜30秒）。
+4. 接続確認（**すべてGETのみ、PATCHは一切実行していない**）:
+   - `x-app-key` ヘッダ無しで `GET /api/gist` → **401** `{"error":"unauthorized"}`（要件どおり第三者は読めない）。
+   - 誤った `x-app-key`（ダミー文字列）でも同様に **401**。
+   - トップページ `https://long-email-reader.netlify.app/` は **200** で正常配信継続。
+   - デプロイ後の `index.html` を実際にダウンロードしてローカルのコミット版と `diff` → **完全一致**。`_pullOk` ガード・`GIST_PROXY_URL`（`/api/gist`）・`x-app-key` 送信・PATCH前提条件（`_pullOk`必須）が本番にそのまま反映されていることをgrepで確認。
+   - **正しいAPP_KEYでの200確認・PATCHの実行はいずれも未実施**（APP_KEYの実値はユーザーのみが把握。本セッションでは推測・詮索しない方針のため、ユーザー自身の確認に委ねた）。
+
+**ユーザーが次にやること:**
+1. 各端末（PC/iPhone）のリーダー設定画面 → 「アプリキー」欄に、Netlifyへ登録した `APP_KEY` と同じ値を入力して保存。保存後「🔄 今すぐ同期」を押し、200で同期が動く（8/4号 `dxa3ra8q7` が表示され続ける・7/28号 `dboiqu3e2` は墓標のまま）ことを確認。
+2. `mailmag_to_reader.py`（`C:\Users\Masashi\Documents\Scripts\reader_sync\.env`、programmerのアクセス許可外のため今回内容未確認）で `GITHUB_TOKEN` をコメントアウトし、`PROXY_URL=https://long-email-reader.netlify.app/api/gist` と `APP_KEY=<同じ合言葉>` を設定してproxyモードへ切替。切替後はまず `--dry-run`（あれば）または実行前にログのみで直接/プロキシいずれのモードか確認してから本番実行することを推奨。
+
+**残作業:** 401検証は完了、200（正規キー）検証とproxyモードでのPython側実書き込みはユーザー確認待ち。
+
+---
+
 ## 2026-08-04 GitHub PATをNetlify Functionsプロキシに集約（端末はアプリキーのみ保持）
 
 **担当エージェント:** programmer
