@@ -1,0 +1,9 @@
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+[[redirects]]
+  from = "/api/gist"
+  to = "/.netlify/functions/gist"
+  status = 200
+  force = true

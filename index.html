@@ -241,15 +241,12 @@
         <option value="fine">細かい（Q&Aの各設問・小項目まで / 目安30〜70）</option>
       </select>
       <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
-      <h3 style="margin:0 0 6px;font-size:14px;color:var(--sub)">☁️ クロスデバイス同期（GitHub Gist）</h3>
-      <p class="hint" style="margin:0 0 8px">GitHub Personal Access Token（gist スコープのみ）を入力すると PC&#8596;iPhone で自動同期します。トークンはこの端末にのみ保存されます。</p>
-      <label>GitHub トークン <span class="hint">（ghp_... / gist スコープ）</span></label>
-      <input type="password" id="ghToken" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" autocomplete="off">
-      <label>Gist ID <span class="hint">（初回自動生成。他端末では既存IDを貼り付け）</span></label>
-      <input type="text" id="ghGistId" placeholder="（自動入力）" autocomplete="off">
+      <h3 style="margin:0 0 6px;font-size:14px;color:var(--sub)">☁️ クロスデバイス同期（アプリキー）</h3>
+      <p class="hint" style="margin:0 0 8px">アプリキー（自分で決めた合言葉。期限はありません）を入力すると PC&#8596;iPhone で自動同期します。GitHubのトークンはこの端末には一切保存されません（Netlify側の環境変数に一元管理）。他端末にも同じアプリキーを設定してください。</p>
+      <label>アプリキー <span class="hint">（Netlify環境変数 APP_KEY と同じ値）</span></label>
+      <input type="password" id="appKeyInput" placeholder="合言葉を入力" autocomplete="off">
       <div style="display:flex;gap:8px;margin:6px 0 12px;flex-wrap:wrap">
         <button id="btnSyncNow" type="button">🔄 今すぐ同期</button>
-        <button id="btnGistClear" type="button" class="danger">Gist IDをリセット</button>
       </div>
       <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
       <h3 style="margin:0 0 6px;font-size:14px;color:var(--sub)">🟣 Obsidian Vault 保存</h3>
@@ -1459,11 +1456,16 @@ function persist(){
   schedulePush();
 }
 /* ============================================================
-   GitHub Gist クロスデバイス同期
+   Gist同期（Netlify Functionsプロキシ経由）
+   GitHub PAT は Netlify 側の環境変数（GITHUB_TOKEN/GIST_ID）にのみ保持し、
+   この端末には一切保存しない。端末が持つのは無期限の自作キー(APP_KEY)のみ。
+   これにより「PATが失効するたび全端末を巡回更新する」運用から脱却する。
+   旧実装のキー（mr_gh_token/mr_gist_id）は読み込まなくなったが、
+   localStorageに残っていても何もしない無害な残骸として無視するだけで壊れない。
    ============================================================ */
-const GH_TOKEN_KEY  = "mr_gh_token";
-const GH_GIST_KEY   = "mr_gist_id";
-const GIST_FILENAME = "reader_data.json";
+const APP_KEY_KEY    = "mr_app_key";
+const GIST_FILENAME  = "reader_data.json";
+const GIST_PROXY_URL = "/api/gist";
 
 /* Obsidian Vault 保存用のキー（ハンドル本体のみ IndexedDB、それ以外は localStorage） */
 const OBS_ATTFOLDER_KEY  = "mr_obs_attfolder";   // attachments フォルダ名
@@ -1471,8 +1473,7 @@ const OBS_TAGS_KEY       = "mr_obs_tags";        // 既定タグ（カンマ/空
 const OBS_FOLDERNAME_KEY = "mr_obs_foldername";  // 選択中フォルダ名（表示用）
 const OBS_IDB_NAME = "mr_obsidian", OBS_IDB_STORE = "handles", OBS_IDB_KEY = "vaultDir";
 
-function ghToken(){ return (localStorage.getItem(GH_TOKEN_KEY)||"").trim(); }
-function ghGistId(){ return (localStorage.getItem(GH_GIST_KEY)||"").trim(); }
+function appKey(){ return (localStorage.getItem(APP_KEY_KEY)||"").trim(); }
 
 function setSyncStatus(state){
   const el = document.getElementById("syncBadge");
@@ -1495,9 +1496,9 @@ const PUSH_MERGE_MAX_AGE_MS = 60000;   // この時間内にマージ済みな�
 /* リモートを取得してローカルへLWWマージする（read-modify-write の read 部分）。
    成功時 true。rerender=true のときだけ本文の開き直しまで行う
    （Push経路では読書中のスクロール位置を乱さないよう false でドロップダウン更新のみ）。 */
-async function gistFetchMerge(token, gistId, rerender){
-  const res = await fetch("https://api.github.com/gists/"+gistId,
-    { headers:{ "Authorization":"token "+token } });
+async function gistFetchMerge(rerender){
+  const key = appKey(); if (!key) return false;
+  const res = await fetch(GIST_PROXY_URL, { headers:{ "x-app-key":key } });
   if (!res.ok) return false;
   const data = await res.json();
   const file = (data.files||{})[GIST_FILENAME];
@@ -1527,39 +1528,21 @@ function applyMergedToUi(){
 }
 
 async function gistPush(opts){
-  const token = ghToken(); if (!token) return;
+  const key = appKey(); if (!key) return;
   // iOS Safari の背面遷移（visibilitychange/beforeunload）対策：keepaliveで実行コンテキスト破棄後も送信継続させる。
   // body が64KBを超えるとkeepalive fetchは失敗しうるが、既存のtry/catchでerror表示にフォールバックするだけで壊れない。
   const keepalive = !!(opts && opts.keepalive);
-  const allowCreate = !!(opts && opts.allowCreate);
-  const headers = { "Content-Type":"application/json", "Authorization":"token "+token };
-  const gistId = ghGistId();
+  const headers = { "Content-Type":"application/json", "x-app-key":key };
   setSyncStatus("syncing");
   try{
-    if (!gistId){
-      // 自動Pushでの暗黙のGist新規作成は禁止（空Gistへの取り違え事故防止）。作成は設定画面の「今すぐ同期」からのみ。
-      if (!allowCreate){ setSyncStatus("error"); _pushPending = true; return; }
-      const res = await fetch("https://api.github.com/gists", { method:"POST", headers, keepalive,
-        body: JSON.stringify({ description:"しおりリーダー同期データ", public:false,
-          files:{ [GIST_FILENAME]:{ content: JSON.stringify(docs) } } }) });
-      if (res.ok){
-        const d = await res.json();
-        localStorage.setItem(GH_GIST_KEY, d.id);
-        // 自分で作ったGist＝リモートに失うデータが無いので、以後のPushを許可する
-        _pullOk = true; _lastMergeAt = Date.now(); _pushPending = false;
-        alert("新しい同期Gistを作成しました。\nGist ID: " + d.id + "\n他の端末にも同じIDを設定してください。");
-      }
-      setSyncStatus(res && res.ok ? "ok" : "error");
-      return;
-    }
-    // 既存Gistの上書きは「このセッションで一度でもリモートを読めた」ことが絶対条件。
+    // 既存データの上書きは「このセッションで一度でもリモートを読めた」ことが絶対条件。
     // Pull失敗直後に古い/欠けたローカル docs で PATCH すると、他端末やPythonが入れた doc を消す（2026-07-28の事故）。
     if (!_pullOk){ setSyncStatus("error"); _pushPending = true; return; }
     const fresh = (Date.now() - _lastMergeAt) < PUSH_MERGE_MAX_AGE_MS;
     if (!(keepalive && fresh)){
       // 通常経路：PATCH直前にリモートを取り直してマージ（read-modify-write）。
       // 読めなかった場合はPATCHせずerror（同期が遅れる方が、データを失うより安全）。
-      const ok = await gistFetchMerge(token, gistId, false);
+      const ok = await gistFetchMerge(false);
       if (!ok){ setSyncStatus("error"); _pushPending = true; return; }
     }
     // keepalive経路（背面遷移・離脱時）で直近マージ済みの場合だけ GET を省略して直接PATCHする。
@@ -1567,7 +1550,7 @@ async function gistPush(opts){
     // 60秒以内にマージ済みならその間のリモート変更を取りこぼす可能性は残るが、5秒デバウンスの通常Pushが
     // 毎回マージしているので実運用では直近数秒ぶんの差分しか無い。
     const body = JSON.stringify({ files:{ [GIST_FILENAME]:{ content: JSON.stringify(docs) } } });
-    const res = await fetch("https://api.github.com/gists/"+gistId, { method:"PATCH", headers, body, keepalive });
+    const res = await fetch(GIST_PROXY_URL, { method:"PATCH", headers, body, keepalive });
     if (res && res.ok) _pushPending = false;
     setSyncStatus(res && res.ok ? "ok" : "error");
   } catch(e){ setSyncStatus("error"); _pushPending = true; }
@@ -1594,11 +1577,10 @@ function mergeFromRemote(remoteDocs){
 }
 
 async function gistPull(){
-  const token = ghToken(); if (!token) return;
-  const gistId = ghGistId(); if (!gistId) return;
+  const key = appKey(); if (!key) return;
   setSyncStatus("syncing");
   try{
-    const ok = await gistFetchMerge(token, gistId, true);
+    const ok = await gistFetchMerge(true);
     setSyncStatus(ok ? "ok" : "error");
     // Pull未成功で見送っていたローカル変更があれば、ここで改めてPush（マージ込み）を予約する
     if (ok && _pushPending){ _pushPending = false; schedulePush(); }
@@ -1608,7 +1590,7 @@ async function gistPull(){
 let _pushTimer = null;
 let _syncSuppressPush = false;
 function schedulePush(){
-  if (_syncSuppressPush || !ghToken()) return;
+  if (_syncSuppressPush || !appKey()) return;
   clearTimeout(_pushTimer);
   _pushTimer = setTimeout(gistPush, 5000);
 }
@@ -1902,11 +1884,8 @@ function openSettings(){
   loadProviderIntoForm(curProvider());
   $("#apiGran").value=curGran();
   $("#apiBmMode").value=curBmMode();
-  const ghT = document.getElementById("ghToken");
-  const ghG = document.getElementById("ghGistId");
-  if (ghT) ghT.value = ghToken();
-  if (ghG) ghG.value = ghGistId();
-  if (ghG && !ghGistId()) ghG.placeholder = "未設定（この状態で同期すると新規Gistが作られます）";
+  const appK = document.getElementById("appKeyInput");
+  if (appK) appK.value = appKey();
   // Obsidian 設定をフォームへ反映
   const oAtt = document.getElementById("obsAttFolder");
   const oTag = document.getElementById("obsTags");
@@ -1923,10 +1902,8 @@ function saveSettings(){
   localStorage.setItem(modelId(p),$("#apiModel").value);
   localStorage.setItem(GRAN_KEY,$("#apiGran").value);
   localStorage.setItem(BMMODE_KEY,$("#apiBmMode").value);
-  const ghT = document.getElementById("ghToken");
-  const ghG = document.getElementById("ghGistId");
-  if (ghT) localStorage.setItem(GH_TOKEN_KEY, ghT.value.trim());
-  if (ghG && ghG.value.trim()) localStorage.setItem(GH_GIST_KEY, ghG.value.trim());
+  const appK = document.getElementById("appKeyInput");
+  if (appK) localStorage.setItem(APP_KEY_KEY, appK.value.trim());
   // Obsidian 設定の保存（空欄なら既定値に戻す＝キー削除）
   const oAtt = document.getElementById("obsAttFolder");
   const oTag = document.getElementById("obsTags");
@@ -2813,13 +2790,7 @@ $("#btnSettings").onclick=openSettings;
 $("#btnSettingsSave").onclick=saveSettings;
 $("#btnSettingsClose").onclick=closeSettings;
 const btnSyncNow = document.getElementById("btnSyncNow");
-const btnGistClear = document.getElementById("btnGistClear");
-if (btnSyncNow) btnSyncNow.onclick = ()=>gistPull().then(()=>gistPush({allowCreate:true}));
-if (btnGistClear) btnGistClear.onclick = ()=>{
-  if (!confirm("Gist IDをリセットします。この後「今すぐ同期」を押した時にだけ新しいGistが作成されます（自動同期では作成されません）。")) return;
-  localStorage.removeItem(GH_GIST_KEY);
-  const el = document.getElementById("ghGistId"); if (el) el.value="";
-};
+if (btnSyncNow) btnSyncNow.onclick = ()=>gistPull().then(()=>gistPush());
 $("#apiProvider").onchange=e=>loadProviderIntoForm(e.target.value);
 $("#docSelect").onchange=e=>{ if(e.target.value) openDoc(e.target.value); };
 $("#btnDelete").onclick=()=>{

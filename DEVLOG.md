@@ -1,3 +1,80 @@
+## 2026-08-04 GitHub PATをNetlify Functionsプロキシに集約（端末はアプリキーのみ保持）
+
+**担当エージェント:** programmer
+
+**背景:** GitHub PAT が `.env`（reader_sync）と全デバイスの localStorage（`mr_gh_token`）に複製されており、
+失効のたび（実際に2026-07-28・2026-08-04と繰り返し発生）全箇所を巡回更新する必要があった。
+Netlify Functions にプロキシを立て、PATの保持箇所を Netlify の環境変数1箇所に集約した。
+
+**変更ファイル（新規）:**
+- `C:\Users\Masashi\OneDrive\reader\netlify.toml` — `publish="."`, `functions="netlify/functions"`,
+  `/api/gist` → `/.netlify/functions/gist` のリダイレクト。
+- `C:\Users\Masashi\OneDrive\reader\netlify\functions\gist.mjs` — GET/PATCH の薄いプロキシ関数。
+  サーバー環境変数 `GITHUB_TOKEN`/`GIST_ID`/`APP_KEY` を読み、クライアントの `x-app-key` ヘッダを
+  `crypto.timingSafeEqual` でタイミング安全比較。不一致・未設定は401（読み取り側も認証必須。
+  Gistはsecretだが未認証GETで200が返る＝URLを知れば読める状態だったため、GET/PATCHどちらも
+  ゲートする。public化は絶対にしない）。GET は Gist API のレスポンス形（`{files:{...}}`）を
+  維持したまま返し、`truncated:true`（1MB超）の場合は `raw_url` をサーバー側で解決してから
+  返すため、クライアントは GitHub の生URLに一切触れない。PATCHはクライアントのGist API互換
+  body（`{files:{"reader_data.json":{content}}}`）を素通しでGitHubへ転送するだけ（墓標/マージ
+  判断はクライアント側の責務のまま変更なし）。
+
+**変更ファイル（既存）:**
+- `index.html`:
+  - 同期系の定数・関数を全面差し替え。`GH_TOKEN_KEY`/`GH_GIST_KEY`/`ghToken()`/`ghGistId()` を廃止し、
+    `APP_KEY_KEY`("mr_app_key")/`appKey()` に統一。通信先は GitHub API 直叩きから `GIST_PROXY_URL`("/api/gist")
+    に変更し、`Authorization: token ...` の代わりに `x-app-key` ヘッダを送る。
+  - **`_pullOk`ガード・read-modify-write（PATCH直前の再GET→マージ）・墓標(tombstone)マージ・keepalive設計は
+    一切変更していない**（過去2回の事故対策そのものを維持。差し替えたのは通信先とヘッダのみ）。
+  - Gist IDはNetlify側の環境変数（サーバー管理）に一本化されたため、クライアント側の「Gist ID未設定→
+    自動Push時は新規作成禁止／`allowCreate`時のみ許可」という分岐（2026-07-28の2件目の事故＝空Gist誤バインドの
+    原因だった仕組み）は**構造的に不要になったため削除**。これにより「端末ごとに別のGistへ誤ってバインドする」
+    という事故のクラス自体が発生しなくなった（副次効果。安全機構を弱めたのではなく、原因となっていた
+    可変性そのものをサーバー管理に移して無くした）。
+  - 設定モーダル: 「GitHub トークン」欄と「Gist ID」欄・「Gist IDをリセット」ボタンを廃止し、
+    「アプリキー」欄（`#appKeyInput`）のみに簡素化。
+  - 旧キー `mr_gh_token`/`mr_gist_id` が端末のlocalStorageに残っていても読み込まなくなっただけで、
+    エラーにはならない（無害な残骸として放置してよい）。
+
+**なぜ:** GitHub PATは30〜90日等で失効し、複製箇所が多いほど失効時の復旧コストが線形に増える。
+プロキシに集約すればPAT保持箇所は1箇所（Netlify環境変数）になり、失効時の更新もそこだけで済む。
+一方、読み取りを無認証にするとNetlifyの公開URLから誰でも有料メルマガ本文を読めてしまうため、
+GET/PATCH双方に無期限の自作キー(APP_KEY)を必須にして従来のアクセス制御を維持した。
+
+**検証（すべてモック。実GitHub/Netlifyへの通信・実Gist書き込みは一切発生させていない）:**
+- `node --check`: `netlify/functions/gist.mjs` 構文OK、`index.html` の本体script（66,061字）構文OK。
+- `gist.mjs` の単体テスト10項目すべてPASS: 認証ヘッダ無し/不一致→401でupstream fetch自体が発生しないこと
+  （＝間違ったAPP_KEYでは絶対にGitHubへ到達しない）、GET通常系のプロキシ転送、GET truncated時のraw_url
+  サーバー側解決（クライアントに露出しない）、GETファイル無し→空配列フォールバック、GET/PATCHのupstream
+  失敗時のステータス伝播、PATCH素通し転送とトークンの非露出、未対応メソッド→405、環境変数未設定→500。
+- `index.html` の同期ロジック（差し替え後）を切り出したNode単体テスト4項目PASS: アプリキー未設定時は
+  fetch自体が一切発生しないこと、GETが`/api/gist`へ`x-app-key`で飛びGitHubへ直接アクセスしないこと、
+  **`_pullOk`がfalseのままではPATCHが発行されないこと（2026-07-28事故の再発防止ロジックが健在）**、
+  Pull成功後のPushがread-modify-write（PATCH直前にGET→マージ）を維持していること。
+
+**ユーザーがNetlify側でやるべき設定（未実施・デプロイ待ち）:**
+1. Netlify管理画面 → 対象サイト（`long-email-reader`）→ Site configuration → Environment variables で以下を登録:
+   - `GITHUB_TOKEN` … Gist読み書き権限を持つGitHub PAT（scope: gist のみで可。可能なら No expiration か長期のものを推奨）
+   - `GIST_ID` … 現在使用中のGist ID（設定画面や`.env`の`GIST_ID`を参照）
+   - `APP_KEY` … 端末側と共有する無期限の合い言葉（長くランダムなものを推奨。自分で決める）
+2. `git add/commit/push` でこのコミットをデプロイ（本セッションでは**未実施**。ユーザー確認後に実施すること）。
+3. デプロイ後、各端末のリーダー設定画面で「GitHub トークン」欄が「アプリキー」欄に変わっているので、
+   Netlifyに登録した`APP_KEY`と同じ値を入力→保存。旧Gist ID欄は無くなった（サーバー管理のため入力不要）。
+4. 「🔄 今すぐ同期」または自動Pullで同期が動くことを確認。401が出る場合はAPP_KEYの不一致、
+   500が出る場合はNetlify側の環境変数未設定を疑う（`gist.mjs`のエラーメッセージ参照）。
+
+**残リスク・既知の制限:**
+- 本セッションではNetlifyへのデプロイを行っていない（環境変数未登録のため、デプロイしても`gist.mjs`は
+  500を返し続ける）。ユーザーが環境変数を登録し、git pushしてから初めて有効になる。
+- `netlify/functions/gist.mjs`の実際のNetlifyランタイムでの動作（ESM default export + `Request`/`Response`）は
+  ドキュメント準拠で実装したが、実機（Netlifyデプロイ環境）での動作確認はできていない
+  （デプロイ自体が本セッションの対象外のため）。
+- 旧`mr_gh_token`（GitHub PAT本体）が端末のlocalStorageに残っている場合、コード上は読まなくなったが
+  値自体は消えない。気になる場合はブラウザの開発者ツールから手動で `localStorage.removeItem("mr_gh_token")`
+  するか、次回の設定保存時に上書き整理する仕組みを別途検討してもよい（今回はスコープ外として未実装）。
+
+---
+
 ## 2026-07-28 Push を非破壊化（Pull成功前のPush禁止＋PATCH直前の再取得マージ）
 
 **担当エージェント:** programmer
