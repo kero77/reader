@@ -17,7 +17,7 @@ test("すべての <script> ブロックが構文エラーなくコンパイル�
 });
 
 test("読みかけUIの要素とハンドラが配線されている", () => {
-  for (const id of ["btnWebmarks", "webmarks", "wmList", "wmNote", "wmBookmarklet", "btnWmCopy", "btnWebmarksClose"]) {
+  for (const id of ["btnWebmarks", "webmarks", "wmList", "wmNote", "wmBookmarklet", "btnWmCopy", "wmResume", "btnWmCopy2", "btnWebmarksClose"]) {
     assert.ok(html.includes('id="' + id + '"'), "id=" + id + " がない");
   }
   for (const frag of [

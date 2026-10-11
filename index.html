@@ -228,10 +228,14 @@
       <div id="wmNote"></div>
       <div id="wmList"></div>
       <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
-      <p class="hint" style="margin:0 0 8px">記録用ブックマークレット。PCはこのリンクをブックマークバーへドラッグ。iPhoneは「コピー」して、Safariで適当なページをブックマーク後、そのブックマークのURL欄に貼り付けます。読むのをやめるときに、記事のページで押してください。</p>
+      <p class="hint" style="margin:0 0 8px">ブックマークレットは2つ。PCはリンクをブックマークバーへドラッグ。iPhoneは「コピー」して、Safariで適当なページをブックマーク後、そのブックマークのURL欄に貼り付けます。</p>
+      <p class="hint" style="margin:8px 0 4px">① 読むのをやめるとき、記事のページで押す</p>
       <a id="wmBookmarklet" href="#" onclick="return false" style="font-size:14px">📍 読みかけを記録</a>
+      <button id="btnWmCopy" type="button">コピー</button>
+      <p class="hint" style="margin:10px 0 4px">② 上の一覧から記事を開いたあと、ページが表示されてから押す（自動で続きに飛ばないサイト用）</p>
+      <a id="wmResume" href="#" onclick="return false" style="font-size:14px">▶ 続きへ</a>
+      <button id="btnWmCopy2" type="button">コピー</button>
       <div class="row">
-        <button id="btnWmCopy" type="button">リンクをコピー</button>
         <button id="btnWebmarksClose" type="button">閉じる</button>
       </div>
     </div>
@@ -1794,7 +1798,8 @@ function webmarkJumpUrl(d){
   const base=webmarkUrlKey(d.url);
   const s=wmWellFormed(d.snippet).trim();
   if(!s) return base;
-  return base+"#:~:text="+encodeURIComponent(s).replace(/-/g,"%2D");
+  const enc=encodeURIComponent(s).replace(/-/g,"%2D");
+  return base+"#wm="+enc+":~:text="+enc;
 }
 function webmarkCapture(){
   var root=document.querySelector("article")||document.querySelector("main")||document;
@@ -1817,12 +1822,36 @@ function webmarkCapture(){
       }
     }
   }
-  var d={ u:location.href.split("#")[0], t:(document.title||"").trim(), s:s };
+  var ti=(document.title||"").trim();
+  if(!ti){ var og=document.querySelector('meta[property="og:title"]'); ti=og&&og.content?String(og.content).trim():""; }
+  if(!ti){ var hh=document.querySelector("h1,h2"); ti=hh?(hh.innerText||"").replace(/\s+/g," ").trim():""; }
+  var d={ u:location.href.split("#")[0], t:ti, s:s };
   var b=btoa(unescape(encodeURIComponent(JSON.stringify(d)))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
   window.open("__ORIGIN__/#webmark="+b,"_blank","noopener");
 }
 function webmarkBookmarklet(origin){
   return "javascript:"+encodeURIComponent("("+webmarkCapture.toString().replace("__ORIGIN__",origin)+")()");
+}
+function webmarkResume(){
+  var toast=function(t){
+    var d=document.createElement("div"); d.textContent=t;
+    d.style.cssText="position:fixed;right:12px;bottom:12px;z-index:2147483647;background:#222;color:#fff;padding:8px 12px;border-radius:6px;font:14px sans-serif";
+    document.body.appendChild(d); setTimeout(function(){ d.remove(); },3000);
+  };
+  var m=/(?:^#|&)wm=([^&:]*)/.exec(location.hash), s="";
+  try{ s=m?decodeURIComponent(m[1]):""; }catch(e){}
+  if(!s){ toast("続きの記録がありません（読みかけ一覧のリンクから開き直してください）"); return; }
+  var sel=window.getSelection(), ok=false;
+  try{ sel.removeAllRanges(); ok=window.find(s,false,false,true,false,false,false); }catch(e){}
+  if(!ok){ toast("見つかりませんでした。ページの読み込み後にもう一度押してください"); return; }
+  var r=sel.rangeCount?sel.getRangeAt(0):null, n=r&&r.startContainer;
+  if(n&&n.nodeType===3) n=n.parentElement;
+  if(n&&n.scrollIntoView) n.scrollIntoView({block:"center"});
+  history.replaceState(null,"",location.href.split("#")[0]);
+  toast("続きの位置に移動しました");
+}
+function webmarkResumeBookmarklet(){
+  return "javascript:"+encodeURIComponent("("+webmarkResume.toString()+")()");
 }
 /* WEBMARK:END */
 
@@ -2053,6 +2082,7 @@ function deleteWebmark(id){
 function openWebmarks(note){
   $("#wmNote").textContent=note||"";
   $("#wmBookmarklet").href=webmarkBookmarklet(webmarkOrigin());
+  $("#wmResume").href=webmarkResumeBookmarklet();
   renderWebmarks();
   $("#webmarks").classList.remove("hidden");
 }
@@ -2961,10 +2991,12 @@ $("#btnSettingsSave").onclick=saveSettings;
 $("#btnSettingsClose").onclick=closeSettings;
 $("#btnWebmarks").onclick=()=>openWebmarks();
 $("#btnWebmarksClose").onclick=closeWebmarks;
-$("#btnWmCopy").onclick=async()=>{
-  try{ await navigator.clipboard.writeText(webmarkBookmarklet(webmarkOrigin())); $("#wmNote").textContent="リンクをコピーしました。"; }
-  catch(e){ $("#wmNote").textContent="コピーできませんでした。上のリンクをドラッグしてください。"; }
+const copyBookmarklet=async(make)=>{
+  try{ await navigator.clipboard.writeText(make()); $("#wmNote").textContent="リンクをコピーしました。"; }
+  catch(e){ $("#wmNote").textContent="コピーできませんでした。リンクをドラッグしてください。"; }
 };
+$("#btnWmCopy").onclick=()=>copyBookmarklet(()=>webmarkBookmarklet(webmarkOrigin()));
+$("#btnWmCopy2").onclick=()=>copyBookmarklet(webmarkResumeBookmarklet);
 const btnSyncNow = document.getElementById("btnSyncNow");
 if (btnSyncNow) btnSyncNow.onclick = ()=>gistPull().then(()=>gistPush());
 $("#apiProvider").onchange=e=>loadProviderIntoForm(e.target.value);
