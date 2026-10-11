@@ -29,6 +29,8 @@ test("読みかけUIの要素とハンドラが配線されている", () => {
     'addEventListener("storage"',
     "webmarkIntakeNote(!!appKey(), ",
     "parseResumeHash(location.hash)",
+    "照合したURL:",
+    "登録済み:",
     "function respondResume(",
     "webmarkResumeBookmarklet(webmarkOrigin())",
   ]) {

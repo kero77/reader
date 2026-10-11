@@ -151,7 +151,7 @@
   #webmarks .wm-item a{color:var(--accent); text-decoration:none; word-break:break-word; font-size:14px}
   #webmarks .wm-item .wm-snip{font-size:12px; color:var(--sub); margin-top:2px; word-break:break-word}
   #webmarks .wm-item button{flex:none}
-  #wmNote{font-size:12px; color:var(--accent); min-height:1em}
+  #wmNote{font-size:12px; color:var(--accent); min-height:1em; word-break:break-all}
   .ai-status{font-size:12px; color:var(--accent); margin-left:4px}
   .ai-status.warn{
     color:#b04a00; background:#fff3bf; border:1px solid #f0d98a;
@@ -2160,10 +2160,13 @@ function respondResume(u){
   if(window.opener && webmarkResumeAllowed(document.referrer,u)){
     const tgt=new URL(u).origin;
     try{ window.opener.postMessage({type:"wm-snippet",u,s,found:!!d},tgt); }catch(e){}
-    setTimeout(()=>window.close(),300);
+    if(s){ setTimeout(()=>window.close(),300); return; }
+    // 断片を返せなかったときはタブを閉じず、原因を画面に出す（照合したURLと登録済みURLを見比べられるように）
+    const saved=liveWebmarksOf(docs).slice(0,5).map(x=>webmarkUrlKey(x.url)).join(" , ")||"なし";
+    openWebmarks((d?"記録はありますが位置の文が空です。もう一度記録してください。":"このページの読みかけが見つかりません。")+" 照合したURL: "+u+" / 登録済み: "+saved);
     return;
   }
-  openWebmarks(s ? "元のページへ送れませんでした。位置:「"+s+"」（Ctrl+F で貼り付けて探せます）" : "このページの読みかけは見つかりません。");
+  openWebmarks(s ? "元のページへ送れませんでした。位置:「"+s+"」（Ctrl+F で貼り付けて探せます）" : "このページの読みかけは見つかりません。 照合したURL: "+u+" / 登録済み: "+(liveWebmarksOf(docs).slice(0,5).map(x=>webmarkUrlKey(x.url)).join(" , ")||"なし"));
 }
 function intakeWebmarkFromHash(){
   const m=parseWebmarkHash(location.hash);
