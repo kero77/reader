@@ -39,7 +39,7 @@ APP_KEY はブックマークレットに含めない（第三者サイト上で
 - タップで `url + "#:~:text=" + encodeURIComponent(snippet)` を新規タブで開く。
   断片が見つからない場合はページ先頭が開くだけ（壊れない）。
 - 起動時に `location.hash` が `#webmark=` なら、デコードして登録し、ハッシュを `history.replaceState` で消す。
-  アプリキー未設定・Pull 前の場合は登録を保留し、Pull 成功後に反映する。
+  登録はローカル（localStorage）へ即時に行う。Gist への Push は既存の `_pullOk` ガードで Pull 成功後まで止まるため、同期の安全性は変わらない。
 
 ### 4. 触らないもの
 `netlify\functions\gist.mjs`、`reader_sync\mailmag_to_reader.py`、既存の号のスクロール保存、同期関数群。
