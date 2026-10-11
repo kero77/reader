@@ -292,7 +292,7 @@ function runResume(hash, { found = true, popup = true } = {}) {
   };
   const hist = { replaceState: (_a, _b, url) => { calls.replaced = url; } };
   new Function("document", "window", "location", "history", "setTimeout", code)(
-    doc, win, { hash, href: "https://ex.com/a?x=1" + hash }, hist, () => {}
+    doc, win, { hash, href: "https://ex.com/a?x=1" + hash, pathname: "/a" }, hist, () => {}
   );
   return calls;
 }
@@ -373,6 +373,35 @@ test("findWebmarkByUrl: 削除済み・kindなしは対象外、#以降は無視
   ];
   assert.equal(api.findWebmarkByUrl(list, "https://ex.com/a#frag").snippet, "生きている");
   assert.equal(api.findWebmarkByUrl(list, "https://ex.com/zzz"), null);
+});
+
+test("findWebmarkByUrl: 完全一致を優先し、なければクエリ・末尾スラッシュ違いを許す", () => {
+  const list = [
+    { id: "w1", kind: "webmark", url: "https://ex.com/a?s=20", snippet: "クエリ付き", updatedAt: "2026-10-02T00:00:00Z" },
+    { id: "w2", kind: "webmark", url: "https://ex.com/a", snippet: "完全一致", updatedAt: "2026-10-01T00:00:00Z" },
+  ];
+  assert.equal(api.findWebmarkByUrl(list, "https://ex.com/a").snippet, "完全一致");
+  assert.equal(api.findWebmarkByUrl(list, "https://ex.com/a/").snippet, "クエリ付き");
+  assert.equal(api.findWebmarkByUrl(list, "https://ex.com/a?utm=1").snippet, "クエリ付き");
+});
+
+test("findWebmarkByUrl: 同じオリジンで同じ長い数字ID(Xのstatus/article等)なら別のパスでも一致する", () => {
+  const list = [{ id: "w1", kind: "webmark", url: "https://x.com/gregisenberg/status/2103927365977928019", snippet: "断片", updatedAt: "2026-10-01T00:00:00Z" }];
+  assert.equal(api.findWebmarkByUrl(list, "https://x.com/gregisenberg/article/2103927365977928019").snippet, "断片");
+  assert.equal(api.findWebmarkByUrl(list, "https://x.com/i/article/2103927365977928019").snippet, "断片");
+});
+
+test("findWebmarkByUrl: 別オリジン・短い数字・IDなしの別パスは一致しない", () => {
+  const list = [{ id: "w1", kind: "webmark", url: "https://x.com/a/status/2103927365977928019", snippet: "断片", updatedAt: "2026-10-01T00:00:00Z" }];
+  assert.equal(api.findWebmarkByUrl(list, "https://twitter.com/a/status/2103927365977928019"), null);
+  assert.equal(api.findWebmarkByUrl(list, "https://x.com/a/status/12345"), null);
+  assert.equal(api.findWebmarkByUrl(list, "https://x.com/other/page"), null);
+});
+
+test("resume: 見つからないとき、押したページのパスを表示する(記録時のURLと見比べられるように)", () => {
+  const c = runResume("");
+  c.listener(msg({ data: { type: "wm-snippet", s: "" } }));
+  assert.match(c.toasts.join(), /見つかりません（\/a）/);
 });
 
 test("webmarkResumeAllowed: 開いた元ページと同じオリジンのURLの断片だけ返す(他サイトの閲覧履歴を探られないため)", () => {
