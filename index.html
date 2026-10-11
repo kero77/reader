@@ -1759,6 +1759,12 @@ function liveWebmarksOf(list){
     .sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
 }
 function webmarkUrlKey(u){ return String(u||"").split("#")[0]; }
+function wmWellFormed(s){ return Array.from(String(s||"")).filter(ch=>!(ch.length===1&&/[\uD800-\uDFFF]/.test(ch))).join(""); }
+function wmClip(s,n){ return Array.from(wmWellFormed(s)).slice(0,n).join(""); }
+function webmarkSafeUrl(u){ return /^https?:\/\//i.test(String(u||"")); }
+function webmarkIntakeNote(hasKey){
+  return hasKey ? "読みかけを記録しました。" : "記録しました（この端末のみ。アプリキー未設定のため他の端末には同期されません）。";
+}
 function parseWebmarkHash(hash){
   const m=/^#?webmark=([A-Za-z0-9_-]{1,20000})$/.exec(String(hash||""));
   if(!m) return null;
@@ -1767,7 +1773,7 @@ function parseWebmarkHash(hash){
     const o=JSON.parse(decodeURIComponent(escape(atob(b+"=".repeat((4-b.length%4)%4)))));
     if(!o||typeof o.u!=="string"||!/^https?:\/\//i.test(o.u)) return null;
     const u=webmarkUrlKey(o.u);
-    return { u, t:String(o.t||"").trim().slice(0,200)||u, s:String(o.s||"").slice(0,120) };
+    return { u, t:wmClip(String(o.t||"").trim(),200)||u, s:wmClip(o.s,120) };
   }catch(e){ return null; }
 }
 function upsertWebmark(list, mark, nowIso, newId){
@@ -1784,8 +1790,9 @@ function upsertWebmark(list, mark, nowIso, newId){
   return { docs:[doc,...list], doc };
 }
 function webmarkJumpUrl(d){
+  if(!webmarkSafeUrl(d.url)) return "";
   const base=webmarkUrlKey(d.url);
-  const s=String(d.snippet||"").trim();
+  const s=wmWellFormed(d.snippet).trim();
   if(!s) return base;
   return base+"#:~:text="+encodeURIComponent(s).replace(/-/g,"%2D");
 }
@@ -1796,12 +1803,23 @@ function webmarkCapture(){
     var r=els[i].getBoundingClientRect();
     if(r.bottom>8 && r.top<window.innerHeight){
       var t=(els[i].innerText||"").replace(/\s+/g," ").trim();
-      if(t.length>=12){ s=t.slice(0,40); break; }
+      if(t.length>=12){
+        var cps=Array.from(t);
+        if(cps.length>40){
+          var cp=cps.slice(0,40).join(""), last=0;
+          if(typeof Intl!=="undefined"&&Intl.Segmenter){
+            var sg=Array.from(new Intl.Segmenter(undefined,{granularity:"word"}).segment(t));
+            for(var j=0;j<sg.length;j++){ var e=sg[j].index+sg[j].segment.length; if(e<=cp.length) last=e; else break; }
+          } else { last=cp.lastIndexOf(" "); }
+          s=(last>=12?t.slice(0,last):cp).trim();
+        } else { s=t; }
+        break;
+      }
     }
   }
   var d={ u:location.href.split("#")[0], t:(document.title||"").trim(), s:s };
   var b=btoa(unescape(encodeURIComponent(JSON.stringify(d)))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
-  window.open("__ORIGIN__/#webmark="+b,"_blank");
+  window.open("__ORIGIN__/#webmark="+b,"_blank","noopener");
 }
 function webmarkBookmarklet(origin){
   return "javascript:"+encodeURIComponent("("+webmarkCapture.toString().replace("__ORIGIN__",origin)+")()");
@@ -2014,9 +2032,10 @@ function renderWebmarks(){
     box.appendChild(p); return;
   }
   for(const d of list){
+    const href=webmarkJumpUrl(d); if(!href) continue;
     const row=document.createElement("div"); row.className="wm-item";
     const main=document.createElement("div"); main.className="wm-main";
-    const a=document.createElement("a"); a.href=webmarkJumpUrl(d); a.target="_blank"; a.rel="noopener"; a.textContent=d.title;
+    const a=document.createElement("a"); a.href=href; a.target="_blank"; a.rel="noopener"; a.textContent=d.title;
     const meta=document.createElement("div"); meta.className="hint";
     meta.textContent=`${d.site||""}　${(d.updatedAt||"").slice(0,16).replace("T"," ")}`;
     main.appendChild(a); main.appendChild(meta);
@@ -2974,6 +2993,16 @@ document.addEventListener("visibilitychange", ()=>{
   if (document.visibilityState === "visible") gistPull();
   else { clearTimeout(_pushTimer); gistPush({keepalive:true}); }
 });
+// 別タブ(ブックマークレットが開く新規タブ等)が書いた localStorage を取り込む。取り込まないと、古いタブの次の persist() が読みかけを上書きして失う。
+window.addEventListener("storage", e=>{
+  if(e.key!==LS_KEY || !e.newValue) return;
+  try{
+    if(mergeFromRemote(JSON.parse(e.newValue))){
+      renderDocSelect();
+      if(!$("#webmarks").classList.contains("hidden")) renderWebmarks();
+    }
+  }catch(err){}
+});
 window.addEventListener("beforeunload", ()=>{ clearTimeout(_pushTimer); gistPush({keepalive:true}); });
 
 /* ---------- 起動 ---------- */
@@ -3009,7 +3038,7 @@ gistPull();
 initTheme();
 renderDocSelect();
 { const live=liveDocs(); if(live.length) openDoc(live[0].id); else showNew(); }
-if(_wmIn) openWebmarks("読みかけを記録しました。");
+if(_wmIn) openWebmarks(webmarkIntakeNote(!!appKey()));
 </script>
 </body>
 </html>

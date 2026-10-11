@@ -26,6 +26,8 @@ test("読みかけUIの要素とハンドラが配線されている", () => {
     "intakeWebmarkFromHash()",
     "function renderWebmarks(",
     "function deleteWebmark(",
+    'addEventListener("storage"',
+    "webmarkIntakeNote(!!appKey())",
   ]) {
     assert.ok(html.includes(frag), frag + " がない");
   }

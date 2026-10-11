@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.join(here, "..", "index.html"), "utf8");
 const m = /\/\* WEBMARK:BEGIN \*\/([\s\S]*?)\/\* WEBMARK:END \*\//.exec(html);
 assert.ok(m, "index.html に WEBMARK:BEGIN/END ブロックがない");
 const api = new Function(
-  m[1] + "; return {liveDocsOf,liveWebmarksOf,webmarkUrlKey,parseWebmarkHash,upsertWebmark,webmarkJumpUrl,webmarkBookmarklet};"
+  m[1] + "; return {liveDocsOf,liveWebmarksOf,webmarkUrlKey,parseWebmarkHash,upsertWebmark,webmarkJumpUrl,webmarkBookmarklet,webmarkIntakeNote};"
 )();
 
 const enc = (o) => Buffer.from(JSON.stringify(o), "utf8").toString("base64url");
@@ -133,10 +133,11 @@ function runBookmarklet({ elems, title = "題名", href = "https://ex.com/a?x=1#
     querySelector: (sel) => (scoped && /article|main/.test(sel) ? scoped : null),
     querySelectorAll: () => elems,
   };
-  const win = { innerHeight: 800, open: (u) => { opened = u; } };
+  const win = { innerHeight: 800, open: (u, _t, features) => { opened = u; lastFeatures = features; } };
   new Function("document", "window", "location", code)(doc, win, { href });
   return opened;
 }
+let lastFeatures;
 const el = (text, top, bottom) => ({
   innerText: text,
   textContent: text,
@@ -156,8 +157,53 @@ test("bookmarklet: 画面上端の段落の先頭40文字を、リーダーへ#w
   const r = api.parseWebmarkHash(new URL(opened).hash);
   assert.equal(r.u, "https://ex.com/a?x=1");
   assert.equal(r.t, "題名");
-  assert.equal(r.s.length, 40);
+  assert.ok(r.s.length >= 12 && r.s.length <= 40, "長さ: " + r.s.length);
   assert.ok(r.s.startsWith("読んでいた段落です。"));
+});
+
+const wellFormed = (s) => s.isWellFormed();
+
+test("bookmarklet: 40字目が絵文字・サロゲートペアの前半でも壊れた断片を作らない", () => {
+  const text = "あ".repeat(39) + "😀" + "い".repeat(30);
+  const opened = runBookmarklet({ elems: [el(text, 0, 100)] });
+  const r = api.parseWebmarkHash(new URL(opened).hash);
+  assert.ok(wellFormed(r.s), "孤立サロゲートが残っている");
+  assert.doesNotThrow(() => api.webmarkJumpUrl({ url: r.u, snippet: r.s }));
+});
+
+test("bookmarklet: 英文は単語の途中で切らない（テキストフラグメントは語境界で一致するため）", () => {
+  const full = "Alpha beta gamma delta epsilon zeta etalongword theta iota kappa";
+  const opened = runBookmarklet({ elems: [el(full, 0, 100)] });
+  const r = api.parseWebmarkHash(new URL(opened).hash);
+  assert.ok(full.startsWith(r.s) && r.s.length >= 12);
+  assert.ok(r.s.length === full.length || full[r.s.length] === " ", "単語の途中で切れた: [" + r.s + "]");
+});
+
+test("bookmarklet: 新規タブをnoopenerで開く（開いた先から元ページを操作されない）", () => {
+  runBookmarklet({ elems: [el("本文の段落です。本文の段落です。", 0, 100)] });
+  assert.match(String(lastFeatures), /noopener/);
+});
+
+test("parseWebmarkHash: 孤立サロゲートを含む断片・タイトルは除去され、ジャンプURLが例外を出さない", () => {
+  const r = api.parseWebmarkHash(
+    "#webmark=" + enc({ u: "https://ex.com/", t: "題" + "\uD842", s: "あ".repeat(39) + "\uD842" })
+  );
+  assert.ok(wellFormed(r.s) && wellFormed(r.t));
+  assert.doesNotThrow(() => api.webmarkJumpUrl({ url: r.u, snippet: r.s }));
+});
+
+test("webmarkJumpUrl: リモート由来の孤立サロゲートでも例外を出さない", () => {
+  assert.doesNotThrow(() => api.webmarkJumpUrl({ url: "https://ex.com/", snippet: "あ\uD842" }));
+});
+
+test("webmarkJumpUrl: http(s)以外のURL(javascript:など)は空文字を返す", () => {
+  assert.equal(api.webmarkJumpUrl({ url: "javascript:alert(1)//", snippet: "x" }), "");
+  assert.equal(api.webmarkJumpUrl({ url: "data:text/html,x", snippet: "" }), "");
+});
+
+test("webmarkIntakeNote: アプリキー未設定なら同期されない旨を伝える", () => {
+  assert.equal(api.webmarkIntakeNote(true), "読みかけを記録しました。");
+  assert.match(api.webmarkIntakeNote(false), /同期されません/);
 });
 
 test("bookmarklet: 非表示の要素(innerTextが空でtextContentだけある)は拾わない", () => {
