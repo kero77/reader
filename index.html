@@ -1868,7 +1868,7 @@ function webmarkResume(){
   window.addEventListener("message",function(ev){
     var d=ev.data;
     if(ev.origin!==O||!d||d.type!=="wm-snippet") return;
-    if(!d.s){ toast("このページの読みかけが見つかりません"); return; }
+    if(!d.s){ toast("このページの読みかけが見つかりません（"+String(location.pathname||"").slice(0,60)+"）"); return; }
     go(d.s);
   });
   var w=window.open(O+"/#resume="+encodeURIComponent(location.href.split("#")[0]),"_blank");
@@ -1883,8 +1883,18 @@ function parseResumeHash(hash){
   try{ const u=decodeURIComponent(m[1]); return webmarkSafeUrl(u)?webmarkUrlKey(u):null; }catch(e){ return null; }
 }
 function findWebmarkByUrl(list,u){
-  const k=webmarkUrlKey(u);
-  return liveWebmarksOf(list).find(d=>webmarkUrlKey(d.url)===k)||null;
+  const live=liveWebmarksOf(list), k=webmarkUrlKey(u);
+  const exact=live.find(d=>webmarkUrlKey(d.url)===k);
+  if(exact) return exact;
+  let U; try{ U=new URL(k); }catch(e){ return null; }
+  const path=p=>p.replace(/\/+$/,"");
+  const ids=p=>p.match(/\d{8,}/g)||[];
+  const parse=d=>{ try{ return new URL(webmarkUrlKey(d.url)); }catch(e){ return null; } };
+  const samePath=live.find(d=>{ const X=parse(d); return X&&X.origin===U.origin&&path(X.pathname)===path(U.pathname); });
+  if(samePath) return samePath;
+  const ui=ids(U.pathname);
+  if(!ui.length) return null;
+  return live.find(d=>{ const X=parse(d); return X&&X.origin===U.origin&&ids(X.pathname).some(i=>ui.includes(i)); })||null;
 }
 function webmarkResumeAllowed(referrer,u){
   try{ return !!referrer && new URL(referrer).origin===new URL(u).origin; }catch(e){ return false; }
