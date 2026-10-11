@@ -1804,13 +1804,23 @@ function webmarkJumpUrl(d){
 }
 function webmarkCapture(){
   var root=document.querySelector("article")||document.querySelector("main")||document;
-  var els=root.querySelectorAll("p,li,blockquote,h1,h2,h3,h4,h5,h6"), s="";
+  var els=root.querySelectorAll("p,li,blockquote,h1,h2,h3,h4,h5,h6"), s="", st=0;
   var pinned=function(x){
     for(var n=x;n&&n.nodeType===1;n=n.parentElement){
       var ps=window.getComputedStyle?window.getComputedStyle(n).position:"";
       if(ps==="fixed"||ps==="sticky") return true;
     }
     return false;
+  };
+  var clip=function(t){
+    var cps=Array.from(t);
+    if(cps.length<=40) return t;
+    var cp=cps.slice(0,40).join(""), last=0;
+    if(typeof Intl!=="undefined"&&Intl.Segmenter){
+      var sg=Array.from(new Intl.Segmenter(undefined,{granularity:"word"}).segment(t));
+      for(var j=0;j<sg.length;j++){ var e=sg[j].index+sg[j].segment.length; if(e<=cp.length) last=e; else break; }
+    } else { last=cp.lastIndexOf(" "); }
+    return (last>=12?t.slice(0,last):cp).trim();
   };
   var shown=function(x,rc){
     if(!document.elementFromPoint) return true;
@@ -1824,16 +1834,23 @@ function webmarkCapture(){
       if(pass===0&&(pinned(x)||(x.closest&&x.closest("header,nav,footer,aside,[role=banner],[role=navigation]"))||!shown(x,r))) continue;
       var t=(x.innerText||"").replace(/\s+/g," ").trim();
       if(t.length<12) continue;
-      var cps=Array.from(t);
-      if(cps.length>40){
-        var cp=cps.slice(0,40).join(""), last=0;
-        if(typeof Intl!=="undefined"&&Intl.Segmenter){
-          var sg=Array.from(new Intl.Segmenter(undefined,{granularity:"word"}).segment(t));
-          for(var j=0;j<sg.length;j++){ var e=sg[j].index+sg[j].segment.length; if(e<=cp.length) last=e; else break; }
-        } else { last=cp.lastIndexOf(" "); }
-        s=(last>=12?t.slice(0,last):cp).trim();
-      } else { s=t; }
+      s=clip(t); st=r.top;
     }
+  }
+  if((!s||st>window.innerHeight*0.3)&&document.caretRangeFromPoint){
+    var got="", fy=[0.12,0.2,0.3,0.4,0.5], fx=[0.5,0.4,0.6,0.3,0.7];
+    for(var a=0;a<fy.length&&!got;a++){
+      for(var c=0;c<fx.length&&!got;c++){
+        var rg=document.caretRangeFromPoint(window.innerWidth*fx[c],window.innerHeight*fy[a]);
+        var nd=rg&&rg.startContainer;
+        if(!nd||nd.nodeType!==3) continue;
+        var pe=nd.parentElement;
+        if(pe&&(pinned(pe)||(pe.closest&&pe.closest("header,nav,footer,aside,[role=banner],[role=navigation]")))) continue;
+        var tx=(nd.textContent||"").replace(/\s+/g," ").trim();
+        if(tx.length>=12) got=clip(tx);
+      }
+    }
+    if(got) s=got;
   }
   var ti=(document.title||"").trim();
   if(!ti){ var og=document.querySelector('meta[property="og:title"]'); ti=og&&og.content?String(og.content).trim():""; }
@@ -1868,7 +1885,10 @@ function webmarkResume(){
   window.addEventListener("message",function(ev){
     var d=ev.data;
     if(ev.origin!==O||!d||d.type!=="wm-snippet") return;
-    if(!d.s){ toast("このページの読みかけが見つかりません（"+String(location.pathname||"").slice(0,60)+"）"); return; }
+    if(!d.s){
+      toast(d.found ? "読みかけは記録されていますが、位置の文が空です。もう一度「📍 読みかけを記録」してください" : "このページの読みかけが見つかりません（"+String(location.pathname||"").slice(0,60)+"）");
+      return;
+    }
     go(d.s);
   });
   var w=window.open(O+"/#resume="+encodeURIComponent(location.href.split("#")[0]),"_blank");
@@ -2139,7 +2159,7 @@ function respondResume(u){
   const d=findWebmarkByUrl(docs,u), s=d?(d.snippet||""):"";
   if(window.opener && webmarkResumeAllowed(document.referrer,u)){
     const tgt=new URL(u).origin;
-    try{ window.opener.postMessage({type:"wm-snippet",u,s},tgt); }catch(e){}
+    try{ window.opener.postMessage({type:"wm-snippet",u,s,found:!!d},tgt); }catch(e){}
     setTimeout(()=>window.close(),300);
     return;
   }

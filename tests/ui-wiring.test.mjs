@@ -41,6 +41,7 @@ test("断片のpostMessageは検証済みオリジンに宛先を固定し、'*'
   assert.equal(calls.length, 1, "wm-snippet の postMessage は1箇所のはず");
   assert.ok(!/"\*"/.test(calls[0]), "宛先が '*' のまま: " + calls[0]);
   assert.match(calls[0], /,tgt\)$/);
+  assert.ok(/postMessage\(\{type:"wm-snippet",u,s,found:!!d\}/.test(html) || calls[0].includes("found"), "found を返していない");
   assert.ok(html.includes("const tgt=new URL(u).origin"));
 });
 
