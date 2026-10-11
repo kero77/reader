@@ -2128,7 +2128,8 @@ function closeWebmarks(){ $("#webmarks").classList.add("hidden"); }
 function respondResume(u){
   const d=findWebmarkByUrl(docs,u), s=d?(d.snippet||""):"";
   if(window.opener && webmarkResumeAllowed(document.referrer,u)){
-    try{ window.opener.postMessage({type:"wm-snippet",u,s},"*"); }catch(e){}
+    const tgt=new URL(u).origin;
+    try{ window.opener.postMessage({type:"wm-snippet",u,s},tgt); }catch(e){}
     setTimeout(()=>window.close(),300);
     return;
   }

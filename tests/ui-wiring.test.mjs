@@ -36,6 +36,14 @@ test("読みかけUIの要素とハンドラが配線されている", () => {
   }
 });
 
+test("断片のpostMessageは検証済みオリジンに宛先を固定し、'*'を使わない", () => {
+  const calls = [...html.matchAll(/postMessage\(\{type:"wm-snippet"[^)]*\)/g)].map((x) => x[0]);
+  assert.equal(calls.length, 1, "wm-snippet の postMessage は1箇所のはず");
+  assert.ok(!/"\*"/.test(calls[0]), "宛先が '*' のまま: " + calls[0]);
+  assert.match(calls[0], /,tgt\)$/);
+  assert.ok(html.includes("const tgt=new URL(u).origin"));
+});
+
 test("同期コードのPATCH呼び出しと mergeFromRemote は1箇所のまま(同期部を触っていない)", () => {
   assert.equal((html.match(/method:"PATCH"/g) || []).length, 1);
   assert.equal((html.match(/function mergeFromRemote\(/g) || []).length, 1);
