@@ -1,3 +1,25 @@
+## 2026-10-11 読みかけ記事（webmark）機能を追加
+
+**担当エージェント:** programmer
+**変更ファイル:** index.html, tests/webmark.test.mjs, tests/ui-wiring.test.mjs, docs/superpowers/specs/2026-10-11-webmark-design.md, docs/superpowers/plans/2026-10-11-webmark.md（ブランチ `feature/webmark`）
+
+**何を:** Web記事の本文は保存せず、ブックマークレットで「どこまで読んだか」（URL・タイトル・画面上端の段落の先頭40字）だけを記録し、📖一覧から `URL#:~:text=…` で元サイトの該当段落へ戻る。
+**なぜ docs 配列に混ぜたか:** Gist の reader_data.json はトップレベルが docs 配列で、mailmag_to_reader.py も配列前提。別キーを足すと取込側が例外で止まる。`kind:"webmark"` の要素として入れれば、LWWマージ・墓標・_pullOkガードをそのまま使える（Python側は title しか見ない）。
+**触っていないもの:** gist.mjs、mailmag_to_reader.py、同期関数群。
+**ハマりどころ・注意:**
+- liveDocs() は webmark を除外する。docs を直接 filter する新規コードは kind を意識すること。
+- 起動時の #webmark= 取り込みはローカル即登録。Push は Pull 成功後（_pullOk）。
+- ブックマークレットは webmarkCapture.toString() から生成。関数内に // コメントを書かない（javascript: URL に載るため）。
+- 断片の取得は innerText のみ。textContent を代替にすると、Wikipedia の非表示メニュー項目（innerText が空）を拾った（実ページで発見、テストで再現して修正）。
+- テキストフラグメントは動的描画サイト等で効かないことがある（その場合はページ先頭が開くだけ）。断片の `-` は %2D にしている。
+- ブラウザ自動操作（CDP の navigate / クリック）ではテキストフラグメントが効かず scrollY=0 のままだった。実機（手動クリック）でのジャンプ確認は未実施。
+- iPhone Safari はブックマークレットのドラッグ登録ができない。📖画面の「リンクをコピー」→ Safariのブックマークの URL 欄に貼る。
+- Node 22.19 では `node --test tests/`（ディレクトリ指定）が失敗する。`node --test tests/*.test.mjs` を使う。
+- ローカル確認は `py -3 -m http.server 8765`（file:// はブラウザ自動操作から開けない）。
+**未実施:** 本番(Netlify)への push と、実 Gist を介した2端末間の同期確認、実機でのジャンプ確認（ユーザー指示待ち）。
+
+---
+
 ## 2026-08-04 ブラウザ同期失敗の切り分け（同期失敗理由の可視化＋CORS防御を追加）
 
 **担当エージェント:** programmer
