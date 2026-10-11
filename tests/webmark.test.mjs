@@ -125,7 +125,7 @@ test("webmarkJumpUrl: 断片が空ならフラグメントを付けない", () =
   assert.equal(api.webmarkJumpUrl({ url: "https://ex.com/a#old", snippet: "  " }), "https://ex.com/a");
 });
 
-function runBookmarklet({ elems, title = "題名", href = "https://ex.com/a?x=1#frag", scoped = null, og = null, h1 = null }) {
+function runBookmarklet({ elems, title = "題名", href = "https://ex.com/a?x=1#frag", scoped = null, og = null, h1 = null, winExtra = {}, docExtra = {} }) {
   const bm = api.webmarkBookmarklet("https://reader.example");
   assert.ok(bm.startsWith("javascript:"));
   const code = decodeURIComponent(bm.slice("javascript:".length));
@@ -137,8 +137,9 @@ function runBookmarklet({ elems, title = "題名", href = "https://ex.com/a?x=1#
       : sel === "h1,h2" ? (h1 ? { innerText: h1 } : null)
       : (scoped && /article|main/.test(sel) ? scoped : null),
     querySelectorAll: () => elems,
+    ...docExtra,
   };
-  const win = { innerHeight: 800, open: (u, _t, features) => { opened = u; lastFeatures = features; } };
+  const win = { innerHeight: 800, open: (u, _t, features) => { opened = u; lastFeatures = features; }, ...winExtra };
   new Function("document", "window", "location", code)(doc, win, { href });
   return opened;
 }
@@ -206,6 +207,56 @@ test("webmarkJumpUrl: http(s)以外のURL(javascript:など)は空文字を返�
   assert.equal(api.webmarkJumpUrl({ url: "data:text/html,x", snippet: "" }), "");
 });
 
+const snippetOf = (opened) => api.parseWebmarkHash(new URL(opened).hash).s;
+const pinnedEl = (text, pos) => ({
+  nodeType: 1, parentElement: null, __pos: pos, innerText: text, textContent: text,
+  getBoundingClientRect: () => ({ top: 0, bottom: 50 }),
+});
+const flowEl = (text, top, bottom, extra = {}) => ({
+  nodeType: 1, parentElement: null, __pos: "static", innerText: text, textContent: text,
+  getBoundingClientRect: () => ({ top, bottom, left: 0 }), ...extra,
+});
+const posWin = { getComputedStyle: (n) => ({ position: n.__pos || "static" }), innerWidth: 1000 };
+
+test("bookmarklet: 固定(fixed)・追従(sticky)ヘッダーの文字は読み位置として拾わない", () => {
+  for (const pos of ["fixed", "sticky"]) {
+    const opened = runBookmarklet({
+      elems: [pinnedEl("サイト名のヘッダーです。サイト名", pos), flowEl("読んでいた本文の段落です。続きがあります。", 60, 160)],
+      winExtra: posWin,
+    });
+    assert.ok(snippetOf(opened).startsWith("読んでいた本文"), pos + ": " + snippetOf(opened));
+  }
+});
+
+test("bookmarklet: header/nav/footer/aside の中の文字は拾わない", () => {
+  const inNav = flowEl("ナビゲーションの項目テキスト", 0, 30, { closest: () => ({}) });
+  const opened = runBookmarklet({ elems: [inNav, flowEl("本文の段落です。本文の段落です。", 40, 120, { closest: () => null })], winExtra: posWin });
+  assert.ok(snippetOf(opened).startsWith("本文の段落"));
+});
+
+test("bookmarklet: 別の要素(ヘッダー等)に覆われて見えていない行は拾わない", () => {
+  const covered = flowEl("ヘッダーの下に隠れている行です。", 5, 40, { contains: () => false });
+  const shown = flowEl("実際に見えている本文の行です。", 70, 120);
+  shown.contains = (h) => h === shown;
+  const opened = runBookmarklet({
+    elems: [covered, shown],
+    winExtra: posWin,
+    docExtra: { elementFromPoint: (_x, y) => (y < 60 ? { contains: () => false } : shown) },
+  });
+  assert.ok(snippetOf(opened).startsWith("実際に見えている"));
+});
+
+test("bookmarklet: 条件を満たす行がなければ、除外前の最初の可視行にフォールバックする", () => {
+  const inHeader = flowEl("ヘッダーだけのページの文章です。", 0, 30, { closest: () => ({}) });
+  const opened = runBookmarklet({ elems: [inHeader], winExtra: posWin });
+  assert.ok(snippetOf(opened).startsWith("ヘッダーだけのページ"));
+});
+
+test("webmarkIntakeNote: 記録した位置の断片を表示する", () => {
+  assert.match(api.webmarkIntakeNote(true, "読んでいた段落"), /位置:「読んでいた段落」/);
+  assert.match(api.webmarkIntakeNote(false, "読んでいた段落"), /同期されません.*読んでいた段落/);
+});
+
 test("bookmarklet: document.titleが空ならog:title、次に最初の見出しをタイトルに使う", () => {
   const e = [el("本文の段落です。本文の段落です。", 0, 100)];
   const r1 = api.parseWebmarkHash(new URL(runBookmarklet({ elems: e, title: "", og: "OG題名" })).hash);
@@ -222,14 +273,20 @@ function runResume(hash, { found = true } = {}) {
   const bm = api.webmarkResumeBookmarklet();
   assert.ok(bm.startsWith("javascript:"));
   const code = decodeURIComponent(bm.slice("javascript:".length));
-  const calls = { find: null, replaced: null, toasts: [] };
+  const calls = { find: null, replaced: null, toasts: [], scrollIntoView: null, scrollBy: null };
   const doc = {
     createElement: () => ({ style: {}, remove() {} }),
     body: { appendChild: (d) => calls.toasts.push(d.textContent) },
   };
+  const target = { nodeType: 1, scrollIntoView: (o) => { calls.scrollIntoView = o; } };
   const win = {
     find: (s) => { calls.find = s; return found; },
-    getSelection: () => ({ removeAllRanges() {}, rangeCount: 0 }),
+    getSelection: () => ({
+      removeAllRanges() {},
+      rangeCount: found ? 1 : 0,
+      getRangeAt: () => ({ startContainer: { nodeType: 3, parentElement: target } }),
+    }),
+    scrollBy: (x, y) => { calls.scrollBy = [x, y]; },
   };
   const hist = { replaceState: (_a, _b, url) => { calls.replaced = url; } };
   new Function("document", "window", "location", "history", "setTimeout", code)(
@@ -245,6 +302,12 @@ test("resume: wm=の断片を探し、見つかればハッシュを消して移
   assert.equal(c.find, "A-B, C&D 日本語");
   assert.equal(c.replaced, "https://ex.com/a?x=1");
   assert.match(c.toasts.join(), /移動/);
+});
+
+test("resume: 見つけた行を画面の上端に合わせ(記録は上端の行)、固定ヘッダー分だけ戻す", () => {
+  const c = runResume("#wm=" + encodeURIComponent("読んでいた段落"));
+  assert.deepEqual(c.scrollIntoView, { block: "start" });
+  assert.deepEqual(c.scrollBy, [0, -60]);
 });
 
 test("resume: 見つからなければハッシュを残し(押し直せる)、その旨を知らせる", () => {

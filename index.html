@@ -1766,8 +1766,9 @@ function webmarkUrlKey(u){ return String(u||"").split("#")[0]; }
 function wmWellFormed(s){ return Array.from(String(s||"")).filter(ch=>!(ch.length===1&&/[\uD800-\uDFFF]/.test(ch))).join(""); }
 function wmClip(s,n){ return Array.from(wmWellFormed(s)).slice(0,n).join(""); }
 function webmarkSafeUrl(u){ return /^https?:\/\//i.test(String(u||"")); }
-function webmarkIntakeNote(hasKey){
-  return hasKey ? "読みかけを記録しました。" : "記録しました（この端末のみ。アプリキー未設定のため他の端末には同期されません）。";
+function webmarkIntakeNote(hasKey, snippet){
+  const where=snippet ? "位置:「"+snippet+"」" : "";
+  return (hasKey ? "読みかけを記録しました。" : "記録しました（この端末のみ。アプリキー未設定のため他の端末には同期されません）。")+where;
 }
 function parseWebmarkHash(hash){
   const m=/^#?webmark=([A-Za-z0-9_-]{1,20000})$/.exec(String(hash||""));
@@ -1804,22 +1805,34 @@ function webmarkJumpUrl(d){
 function webmarkCapture(){
   var root=document.querySelector("article")||document.querySelector("main")||document;
   var els=root.querySelectorAll("p,li,blockquote,h1,h2,h3,h4,h5,h6"), s="";
-  for(var i=0;i<els.length;i++){
-    var r=els[i].getBoundingClientRect();
-    if(r.bottom>8 && r.top<window.innerHeight){
-      var t=(els[i].innerText||"").replace(/\s+/g," ").trim();
-      if(t.length>=12){
-        var cps=Array.from(t);
-        if(cps.length>40){
-          var cp=cps.slice(0,40).join(""), last=0;
-          if(typeof Intl!=="undefined"&&Intl.Segmenter){
-            var sg=Array.from(new Intl.Segmenter(undefined,{granularity:"word"}).segment(t));
-            for(var j=0;j<sg.length;j++){ var e=sg[j].index+sg[j].segment.length; if(e<=cp.length) last=e; else break; }
-          } else { last=cp.lastIndexOf(" "); }
-          s=(last>=12?t.slice(0,last):cp).trim();
-        } else { s=t; }
-        break;
-      }
+  var pinned=function(x){
+    for(var n=x;n&&n.nodeType===1;n=n.parentElement){
+      var ps=window.getComputedStyle?window.getComputedStyle(n).position:"";
+      if(ps==="fixed"||ps==="sticky") return true;
+    }
+    return false;
+  };
+  var shown=function(x,rc){
+    if(!document.elementFromPoint) return true;
+    var h=document.elementFromPoint(Math.min(Math.max(rc.left+8,0),window.innerWidth-1),Math.min(Math.max(rc.top,0)+6,window.innerHeight-1));
+    return !h||(x.contains&&x.contains(h))||(h.contains&&h.contains(x));
+  };
+  for(var pass=0;pass<2&&!s;pass++){
+    for(var i=0;i<els.length&&!s;i++){
+      var x=els[i], r=x.getBoundingClientRect();
+      if(!(r.bottom>8&&r.top<window.innerHeight)) continue;
+      if(pass===0&&(pinned(x)||(x.closest&&x.closest("header,nav,footer,aside,[role=banner],[role=navigation]"))||!shown(x,r))) continue;
+      var t=(x.innerText||"").replace(/\s+/g," ").trim();
+      if(t.length<12) continue;
+      var cps=Array.from(t);
+      if(cps.length>40){
+        var cp=cps.slice(0,40).join(""), last=0;
+        if(typeof Intl!=="undefined"&&Intl.Segmenter){
+          var sg=Array.from(new Intl.Segmenter(undefined,{granularity:"word"}).segment(t));
+          for(var j=0;j<sg.length;j++){ var e=sg[j].index+sg[j].segment.length; if(e<=cp.length) last=e; else break; }
+        } else { last=cp.lastIndexOf(" "); }
+        s=(last>=12?t.slice(0,last):cp).trim();
+      } else { s=t; }
     }
   }
   var ti=(document.title||"").trim();
@@ -1846,7 +1859,7 @@ function webmarkResume(){
   if(!ok){ toast("見つかりませんでした。ページの読み込み後にもう一度押してください"); return; }
   var r=sel.rangeCount?sel.getRangeAt(0):null, n=r&&r.startContainer;
   if(n&&n.nodeType===3) n=n.parentElement;
-  if(n&&n.scrollIntoView) n.scrollIntoView({block:"center"});
+  if(n&&n.scrollIntoView){ n.scrollIntoView({block:"start"}); if(window.scrollBy) window.scrollBy(0,-60); }
   history.replaceState(null,"",location.href.split("#")[0]);
   toast("続きの位置に移動しました");
 }
@@ -2093,7 +2106,7 @@ function intakeWebmarkFromHash(){
   const r=upsertWebmark(docs, m, new Date().toISOString(), "w"+Math.random().toString(36).slice(2,9)+docs.length);
   docs=r.docs; persist();
   history.replaceState(null,"",location.pathname+location.search);
-  return true;
+  return m;
 }
 function saveSettings(){
   const p=$("#apiProvider").value;
@@ -3070,7 +3083,7 @@ gistPull();
 initTheme();
 renderDocSelect();
 { const live=liveDocs(); if(live.length) openDoc(live[0].id); else showNew(); }
-if(_wmIn) openWebmarks(webmarkIntakeNote(!!appKey()));
+if(_wmIn) openWebmarks(webmarkIntakeNote(!!appKey(), _wmIn.s));
 </script>
 </body>
 </html>
