@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.join(here, "..", "index.html"), "utf8");
 const m = /\/\* WEBMARK:BEGIN \*\/([\s\S]*?)\/\* WEBMARK:END \*\//.exec(html);
 assert.ok(m, "index.html に WEBMARK:BEGIN/END ブロックがない");
 const api = new Function(
-  m[1] + "; return {liveDocsOf,liveWebmarksOf,webmarkUrlKey,parseWebmarkHash,upsertWebmark,webmarkJumpUrl,webmarkBookmarklet,webmarkIntakeNote};"
+  m[1] + "; return {liveDocsOf,liveWebmarksOf,webmarkUrlKey,parseWebmarkHash,upsertWebmark,webmarkJumpUrl,webmarkBookmarklet,webmarkResumeBookmarklet,webmarkIntakeNote};"
 )();
 
 const enc = (o) => Buffer.from(JSON.stringify(o), "utf8").toString("base64url");
@@ -111,26 +111,31 @@ test("upsertWebmark: kindなしの号と同じURLでも号は上書きされな�
   assert.equal(r.docs[1].id, "d1");
 });
 
-test("webmarkJumpUrl: 日本語・- , & をエンコードしてテキストフラグメントを付ける", () => {
+test("webmarkJumpUrl: 日本語・- , & をエンコードし、wm=（続きへ用）とテキストフラグメントの両方に断片を載せる", () => {
   const u = api.webmarkJumpUrl({ url: "https://ex.com/a?x=1", snippet: "A-B, C&D 日本語" });
-  assert.ok(u.startsWith("https://ex.com/a?x=1#:~:text="));
-  const frag = u.slice(u.indexOf("#:~:text=") + "#:~:text=".length);
-  assert.ok(!/[-,& ]/.test(frag), "生の - , & 空白が残っている: " + frag);
-  assert.equal(decodeURIComponent(frag), "A-B, C&D 日本語");
+  assert.ok(u.startsWith("https://ex.com/a?x=1#wm="), u);
+  const [wmPart, textPart] = u.slice(u.indexOf("#wm=") + "#wm=".length).split(":~:text=");
+  for (const part of [wmPart, textPart]) {
+    assert.ok(part && !/[-,& ]/.test(part), "生の - , & 空白が残っている: " + part);
+    assert.equal(decodeURIComponent(part), "A-B, C&D 日本語");
+  }
 });
 
 test("webmarkJumpUrl: 断片が空ならフラグメントを付けない", () => {
   assert.equal(api.webmarkJumpUrl({ url: "https://ex.com/a#old", snippet: "  " }), "https://ex.com/a");
 });
 
-function runBookmarklet({ elems, title = "題名", href = "https://ex.com/a?x=1#frag", scoped = null }) {
+function runBookmarklet({ elems, title = "題名", href = "https://ex.com/a?x=1#frag", scoped = null, og = null, h1 = null }) {
   const bm = api.webmarkBookmarklet("https://reader.example");
   assert.ok(bm.startsWith("javascript:"));
   const code = decodeURIComponent(bm.slice("javascript:".length));
   let opened = null;
   const doc = {
     title,
-    querySelector: (sel) => (scoped && /article|main/.test(sel) ? scoped : null),
+    querySelector: (sel) =>
+      /og:title/.test(sel) ? (og ? { content: og } : null)
+      : sel === "h1,h2" ? (h1 ? { innerText: h1 } : null)
+      : (scoped && /article|main/.test(sel) ? scoped : null),
     querySelectorAll: () => elems,
   };
   const win = { innerHeight: 800, open: (u, _t, features) => { opened = u; lastFeatures = features; } };
@@ -199,6 +204,64 @@ test("webmarkJumpUrl: リモート由来の孤立サロゲートでも例外を�
 test("webmarkJumpUrl: http(s)以外のURL(javascript:など)は空文字を返す", () => {
   assert.equal(api.webmarkJumpUrl({ url: "javascript:alert(1)//", snippet: "x" }), "");
   assert.equal(api.webmarkJumpUrl({ url: "data:text/html,x", snippet: "" }), "");
+});
+
+test("bookmarklet: document.titleが空ならog:title、次に最初の見出しをタイトルに使う", () => {
+  const e = [el("本文の段落です。本文の段落です。", 0, 100)];
+  const r1 = api.parseWebmarkHash(new URL(runBookmarklet({ elems: e, title: "", og: "OG題名" })).hash);
+  assert.equal(r1.t, "OG題名");
+  const r2 = api.parseWebmarkHash(new URL(runBookmarklet({ elems: e, title: "", h1: "  見出し\n題名 " })).hash);
+  assert.equal(r2.t, "見出し 題名");
+  const r3 = api.parseWebmarkHash(new URL(runBookmarklet({ elems: e, title: "", og: "OG題名", h1: "見出し" })).hash);
+  assert.equal(r3.t, "OG題名");
+  const r4 = api.parseWebmarkHash(new URL(runBookmarklet({ elems: e, title: "通常の題名", og: "OG題名" })).hash);
+  assert.equal(r4.t, "通常の題名");
+});
+
+function runResume(hash, { found = true } = {}) {
+  const bm = api.webmarkResumeBookmarklet();
+  assert.ok(bm.startsWith("javascript:"));
+  const code = decodeURIComponent(bm.slice("javascript:".length));
+  const calls = { find: null, replaced: null, toasts: [] };
+  const doc = {
+    createElement: () => ({ style: {}, remove() {} }),
+    body: { appendChild: (d) => calls.toasts.push(d.textContent) },
+  };
+  const win = {
+    find: (s) => { calls.find = s; return found; },
+    getSelection: () => ({ removeAllRanges() {}, rangeCount: 0 }),
+  };
+  const hist = { replaceState: (_a, _b, url) => { calls.replaced = url; } };
+  new Function("document", "window", "location", "history", "setTimeout", code)(
+    doc, win, { hash, href: "https://ex.com/a?x=1" + hash }, hist, () => {}
+  );
+  return calls;
+}
+
+test("resume: wm=の断片を探し、見つかればハッシュを消して移動を知らせる", () => {
+  const u = api.webmarkJumpUrl({ url: "https://ex.com/a?x=1", snippet: "A-B, C&D 日本語" });
+  const hash = new URL(u.split(":~:")[0]).hash;
+  const c = runResume(hash);
+  assert.equal(c.find, "A-B, C&D 日本語");
+  assert.equal(c.replaced, "https://ex.com/a?x=1");
+  assert.match(c.toasts.join(), /移動/);
+});
+
+test("resume: 見つからなければハッシュを残し(押し直せる)、その旨を知らせる", () => {
+  const c = runResume("#wm=" + encodeURIComponent("存在しない文"), { found: false });
+  assert.equal(c.replaced, null);
+  assert.match(c.toasts.join(), /見つかりませんでした/);
+});
+
+test("resume: wm=が無いURLでは探さず、案内を出す", () => {
+  const c = runResume("");
+  assert.equal(c.find, null);
+  assert.match(c.toasts.join(), /記録がありません/);
+});
+
+test("resume: 壊れたエンコードでも例外を出さない", () => {
+  const c = runResume("#wm=%E3%81");
+  assert.equal(c.find, null);
 });
 
 test("webmarkIntakeNote: アプリキー未設定なら同期されない旨を伝える", () => {
