@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.join(here, "..", "index.html"), "utf8");
 const m = /\/\* WEBMARK:BEGIN \*\/([\s\S]*?)\/\* WEBMARK:END \*\//.exec(html);
 assert.ok(m, "index.html に WEBMARK:BEGIN/END ブロックがない");
 const api = new Function(
-  m[1] + "; return {liveDocsOf,liveWebmarksOf,webmarkUrlKey,parseWebmarkHash,upsertWebmark,webmarkJumpUrl};"
+  m[1] + "; return {liveDocsOf,liveWebmarksOf,webmarkUrlKey,parseWebmarkHash,upsertWebmark,webmarkJumpUrl,webmarkBookmarklet};"
 )();
 
 const enc = (o) => Buffer.from(JSON.stringify(o), "utf8").toString("base64url");
@@ -121,4 +121,57 @@ test("webmarkJumpUrl: 日本語・- , & をエンコードしてテキストフ�
 
 test("webmarkJumpUrl: 断片が空ならフラグメントを付けない", () => {
   assert.equal(api.webmarkJumpUrl({ url: "https://ex.com/a#old", snippet: "  " }), "https://ex.com/a");
+});
+
+function runBookmarklet({ elems, title = "題名", href = "https://ex.com/a?x=1#frag", scoped = null }) {
+  const bm = api.webmarkBookmarklet("https://reader.example");
+  assert.ok(bm.startsWith("javascript:"));
+  const code = decodeURIComponent(bm.slice("javascript:".length));
+  let opened = null;
+  const doc = {
+    title,
+    querySelector: (sel) => (scoped && /article|main/.test(sel) ? scoped : null),
+    querySelectorAll: () => elems,
+  };
+  const win = { innerHeight: 800, open: (u) => { opened = u; } };
+  new Function("document", "window", "location", code)(doc, win, { href });
+  return opened;
+}
+const el = (text, top, bottom) => ({
+  innerText: text,
+  textContent: text,
+  getBoundingClientRect: () => ({ top, bottom }),
+});
+
+test("bookmarklet: 画面上端の段落の先頭40文字を、リーダーへ#webmark=で渡す", () => {
+  const opened = runBookmarklet({
+    elems: [
+      el("画面の上に隠れた段落はここに入りません。", -300, -10),
+      el("目次", 0, 20),
+      el("読んでいた段落です。ここから先を読む予定でした。" + "あ".repeat(60), -5, 120),
+      el("次の段落もあります。次の段落もあります。", 130, 200),
+    ],
+  });
+  assert.ok(opened.startsWith("https://reader.example/#webmark="));
+  const r = api.parseWebmarkHash(new URL(opened).hash);
+  assert.equal(r.u, "https://ex.com/a?x=1");
+  assert.equal(r.t, "題名");
+  assert.equal(r.s.length, 40);
+  assert.ok(r.s.startsWith("読んでいた段落です。"));
+});
+
+test("bookmarklet: article/mainがあればその中だけを探す", () => {
+  const scoped = { querySelectorAll: () => [el("本文の段落です。本文の段落です。", 10, 90)] };
+  const opened = runBookmarklet({
+    elems: [el("ナビゲーションのリンク項目です。", 0, 30)],
+    scoped,
+  });
+  assert.ok(api.parseWebmarkHash(new URL(opened).hash).s.startsWith("本文の段落"));
+});
+
+test("bookmarklet: 画面内に段落がなくても例外を出さず s は空、タイトル空はURLに", () => {
+  const opened = runBookmarklet({ elems: [], title: "" });
+  const r = api.parseWebmarkHash(new URL(opened).hash);
+  assert.equal(r.s, "");
+  assert.equal(r.t, "https://ex.com/a?x=1");
 });

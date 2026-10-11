@@ -1766,6 +1766,23 @@ function webmarkJumpUrl(d){
   if(!s) return base;
   return base+"#:~:text="+encodeURIComponent(s).replace(/-/g,"%2D");
 }
+function webmarkCapture(){
+  var root=document.querySelector("article")||document.querySelector("main")||document;
+  var els=root.querySelectorAll("p,li,blockquote,h1,h2,h3,h4,h5,h6"), s="";
+  for(var i=0;i<els.length;i++){
+    var r=els[i].getBoundingClientRect();
+    if(r.bottom>8 && r.top<window.innerHeight){
+      var t=(els[i].innerText||els[i].textContent||"").replace(/\s+/g," ").trim();
+      if(t.length>=12){ s=t.slice(0,40); break; }
+    }
+  }
+  var d={ u:location.href.split("#")[0], t:(document.title||"").trim(), s:s };
+  var b=btoa(unescape(encodeURIComponent(JSON.stringify(d)))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+  window.open("__ORIGIN__/#webmark="+b,"_blank");
+}
+function webmarkBookmarklet(origin){
+  return "javascript:"+encodeURIComponent("("+webmarkCapture.toString().replace("__ORIGIN__",origin)+")()");
+}
 /* WEBMARK:END */
 
 /* ---------- 描画: ドロップダウン ---------- */
