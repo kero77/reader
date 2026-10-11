@@ -130,22 +130,28 @@
   .card .row{display:flex; gap:8px; margin-top:12px; align-items:center; flex-wrap:wrap}
   .hint{font-size:12px; color:var(--sub)}
   .hidden{display:none!important}
-  #settings{
+  #settings,#webmarks{
     position:fixed; inset:0; background:#0006; display:flex; align-items:center; justify-content:center;
     z-index:20; padding:18px;
   }
-  #settings .box{
+  #settings .box,#webmarks .box{
     background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px;
     width:min(460px,94vw); color:var(--ink);
     max-height:90vh; overflow-y:auto;
   }
-  #settings h3{margin:0 0 10px; font-size:16px}
+  #settings h3,#webmarks h3{margin:0 0 10px; font-size:16px}
   #settings label{display:block; font-size:12px; color:var(--sub); margin:10px 0 4px}
   #settings input,#settings select{
     width:100%; font-size:14px; padding:8px 10px; border:1px solid var(--line); border-radius:7px;
     background:var(--bg); color:var(--ink);
   }
-  #settings .row{display:flex; gap:8px; justify-content:flex-end; margin-top:16px}
+  #settings .row,#webmarks .row{display:flex; gap:8px; justify-content:flex-end; margin-top:16px}
+  #webmarks .wm-item{display:flex; align-items:flex-start; gap:8px; padding:8px 0; border-bottom:1px solid var(--line)}
+  #webmarks .wm-item .wm-main{flex:1; min-width:0}
+  #webmarks .wm-item a{color:var(--accent); text-decoration:none; word-break:break-word; font-size:14px}
+  #webmarks .wm-item .wm-snip{font-size:12px; color:var(--sub); margin-top:2px; word-break:break-word}
+  #webmarks .wm-item button{flex:none}
+  #wmNote{font-size:12px; color:var(--accent); min-height:1em}
   .ai-status{font-size:12px; color:var(--accent); margin-left:4px}
   .ai-status.warn{
     color:#b04a00; background:#fff3bf; border:1px solid #f0d98a;
@@ -176,6 +182,7 @@
   <button id="btnExport" title="OneDrive用に自己完結HTMLとして書き出し">📤書き出し</button>
   <button id="btnObsidian" title="この記事をObsidian Vaultに保存（Markdownノート）">🟣 Obsidianに保存</button>
   <button id="btnSettings" title="AI整形の設定（APIキー）">⚙️</button>
+  <button id="btnWebmarks" title="読みかけ記事の一覧（元サイトの続きへジャンプ）">📖</button>
   <button id="btnTheme" title="ナイトモード切替">🌙</button>
   <span id="progressPill" class="progress-pill"></span>
   <button id="btnDrop" title="今読んでいる位置にしおりを挟む">📍</button>
@@ -212,6 +219,21 @@
         <span id="aiStatus" class="ai-status"></span>
       </div>
       <p class="hint" style="margin-top:8px">データはこの端末のブラウザ内(localStorage)に保存されます。AI整形にはAPIキー設定（⚙️）が必要です。</p>
+    </div>
+  </section>
+
+  <section id="webmarks" class="hidden">
+    <div class="box">
+      <h3>📖 読みかけ記事</h3>
+      <div id="wmNote"></div>
+      <div id="wmList"></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
+      <p class="hint" style="margin:0 0 8px">記録用ブックマークレット。PCはこのリンクをブックマークバーへドラッグ。iPhoneは「コピー」して、Safariで適当なページをブックマーク後、そのブックマークのURL欄に貼り付けます。読むのをやめるときに、記事のページで押してください。</p>
+      <a id="wmBookmarklet" href="#" onclick="return false" style="font-size:14px">📍 読みかけを記録</a>
+      <div class="row">
+        <button id="btnWmCopy" type="button">リンクをコピー</button>
+        <button id="btnWebmarksClose" type="button">閉じる</button>
+      </div>
     </div>
   </section>
 
@@ -1542,6 +1564,7 @@ async function gistFetchMerge(rerender){
 }
 
 function applyMergedToUi(){
+  if(!$("#webmarks").classList.contains("hidden")) renderWebmarks();
   renderDocSelect();
   const live = liveDocs();
   const id = currentId && live.find(d=>d.id===currentId) ? currentId : (live[0]&&live[0].id);
@@ -1772,7 +1795,7 @@ function webmarkCapture(){
   for(var i=0;i<els.length;i++){
     var r=els[i].getBoundingClientRect();
     if(r.bottom>8 && r.top<window.innerHeight){
-      var t=(els[i].innerText||els[i].textContent||"").replace(/\s+/g," ").trim();
+      var t=(els[i].innerText||"").replace(/\s+/g," ").trim();
       if(t.length>=12){ s=t.slice(0,40); break; }
     }
   }
@@ -1980,6 +2003,49 @@ function openSettings(){
   $("#settings").classList.remove("hidden");
 }
 function closeSettings(){ $("#settings").classList.add("hidden"); }
+/* ---------- 読みかけ記事（webmark） ---------- */
+function webmarkOrigin(){ return /^https?:/.test(location.origin) ? location.origin : "https://long-email-reader.netlify.app"; }
+function renderWebmarks(){
+  const box=$("#wmList"); box.innerHTML="";
+  const list=liveWebmarksOf(docs);
+  if(!list.length){
+    const p=document.createElement("p"); p.className="hint";
+    p.textContent="まだありません。ブックマークレットで記録すると、ここに並びます。";
+    box.appendChild(p); return;
+  }
+  for(const d of list){
+    const row=document.createElement("div"); row.className="wm-item";
+    const main=document.createElement("div"); main.className="wm-main";
+    const a=document.createElement("a"); a.href=webmarkJumpUrl(d); a.target="_blank"; a.rel="noopener"; a.textContent=d.title;
+    const meta=document.createElement("div"); meta.className="hint";
+    meta.textContent=`${d.site||""}　${(d.updatedAt||"").slice(0,16).replace("T"," ")}`;
+    main.appendChild(a); main.appendChild(meta);
+    if(d.snippet){ const sn=document.createElement("div"); sn.className="wm-snip"; sn.textContent="…"+d.snippet; main.appendChild(sn); }
+    const del=document.createElement("button"); del.textContent="×"; del.title="この読みかけを削除";
+    del.onclick=()=>deleteWebmark(d.id);
+    row.appendChild(main); row.appendChild(del); box.appendChild(row);
+  }
+}
+function deleteWebmark(id){
+  const i=docs.findIndex(d=>d.id===id && d.kind==="webmark"); if(i<0) return;
+  docs[i]={ id, kind:"webmark", title:docs[i].title, deleted:true, updatedAt:new Date().toISOString() };
+  persist(); renderWebmarks();
+}
+function openWebmarks(note){
+  $("#wmNote").textContent=note||"";
+  $("#wmBookmarklet").href=webmarkBookmarklet(webmarkOrigin());
+  renderWebmarks();
+  $("#webmarks").classList.remove("hidden");
+}
+function closeWebmarks(){ $("#webmarks").classList.add("hidden"); }
+function intakeWebmarkFromHash(){
+  const m=parseWebmarkHash(location.hash);
+  if(!m) return false;
+  const r=upsertWebmark(docs, m, new Date().toISOString(), "w"+Math.random().toString(36).slice(2,9)+docs.length);
+  docs=r.docs; persist();
+  history.replaceState(null,"",location.pathname+location.search);
+  return true;
+}
 function saveSettings(){
   const p=$("#apiProvider").value;
   localStorage.setItem(PROVIDER_KEY,p);
@@ -2874,6 +2940,12 @@ $("#btnSettings").onclick=openSettings;
 }
 $("#btnSettingsSave").onclick=saveSettings;
 $("#btnSettingsClose").onclick=closeSettings;
+$("#btnWebmarks").onclick=()=>openWebmarks();
+$("#btnWebmarksClose").onclick=closeWebmarks;
+$("#btnWmCopy").onclick=async()=>{
+  try{ await navigator.clipboard.writeText(webmarkBookmarklet(webmarkOrigin())); $("#wmNote").textContent="リンクをコピーしました。"; }
+  catch(e){ $("#wmNote").textContent="コピーできませんでした。上のリンクをドラッグしてください。"; }
+};
 const btnSyncNow = document.getElementById("btnSyncNow");
 if (btnSyncNow) btnSyncNow.onclick = ()=>gistPull().then(()=>gistPush());
 $("#apiProvider").onchange=e=>loadProviderIntoForm(e.target.value);
@@ -2930,11 +3002,14 @@ window.addEventListener("beforeunload", ()=>{ clearTimeout(_pushTimer); gistPush
   });
   if (docs.length !== before){ _syncSuppressPush = true; persist(); _syncSuppressPush = false; }
 })();
+// 読みかけ記事のハッシュ(#webmark=)があればローカルに登録する（Pull前でも登録。Pushは_pullOkガードでPull成功後まで止まる）
+const _wmIn=intakeWebmarkFromHash();
 // 起動時に Gist から取得（トークン未設定時は即 return）
 gistPull();
 initTheme();
 renderDocSelect();
 { const live=liveDocs(); if(live.length) openDoc(live[0].id); else showNew(); }
+if(_wmIn) openWebmarks("読みかけを記録しました。");
 </script>
 </body>
 </html>

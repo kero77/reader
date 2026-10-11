@@ -160,6 +160,15 @@ test("bookmarklet: 画面上端の段落の先頭40文字を、リーダーへ#w
   assert.ok(r.s.startsWith("読んでいた段落です。"));
 });
 
+test("bookmarklet: 非表示の要素(innerTextが空でtextContentだけある)は拾わない", () => {
+  const hidden = { innerText: "", textContent: "非表示メニューの項目テキストです", getBoundingClientRect: () => ({ top: 10, bottom: 40 }) };
+  const opened = runBookmarklet({
+    elems: [hidden, el("実際に表示されている本文の段落です。", 50, 120)],
+  });
+  const r = api.parseWebmarkHash(new URL(opened).hash);
+  assert.ok(r.s.startsWith("実際に表示されている本文"), "取得した断片: " + r.s);
+});
+
 test("bookmarklet: article/mainがあればその中だけを探す", () => {
   const scoped = { querySelectorAll: () => [el("本文の段落です。本文の段落です。", 10, 90)] };
   const opened = runBookmarklet({
