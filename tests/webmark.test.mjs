@@ -246,6 +246,63 @@ test("bookmarklet: 別の要素(ヘッダー等)に覆われて見えていな�
   assert.ok(snippetOf(opened).startsWith("実際に見えている"));
 });
 
+const textNodeAt = (text, parent = { nodeType: 1, parentElement: null, __pos: "static" }) => ({
+  startContainer: { nodeType: 3, textContent: text, parentElement: parent }, startOffset: 0,
+});
+
+test("bookmarklet: p/li/見出しが画面内に無くても(Xのようなdiv本文)、画面上の位置の文字を拾う", () => {
+  const opened = runBookmarklet({
+    elems: [],
+    winExtra: posWin,
+    docExtra: { caretRangeFromPoint: () => textNodeAt("これは div と span だけで組まれた本文の一節です。続きがあります。") },
+  });
+  assert.ok(snippetOf(opened).startsWith("これは div と span"), snippetOf(opened));
+});
+
+test("bookmarklet: 位置の文字が固定ヘッダー内・短すぎる場合は次の位置を試す", () => {
+  const pinnedParent = { nodeType: 1, parentElement: null, __pos: "fixed" };
+  const answers = [textNodeAt("固定ヘッダーの中の文字列ですよ", pinnedParent), textNodeAt("短い"), textNodeAt("本文の途中にある読んでいた文章です。")];
+  let i = 0;
+  const opened = runBookmarklet({
+    elems: [],
+    winExtra: posWin,
+    docExtra: { caretRangeFromPoint: () => answers[Math.min(i++, answers.length - 1)] },
+  });
+  assert.ok(snippetOf(opened).startsWith("本文の途中にある"), snippetOf(opened));
+});
+
+test("bookmarklet: 見出し等が画面の下の方にしか無ければ、画面上端付近の本文を優先する", () => {
+  const opened = runBookmarklet({
+    elems: [flowEl("画面のずっと下にある見出しの行です。", 500, 560)],
+    winExtra: posWin,
+    docExtra: { caretRangeFromPoint: () => textNodeAt("画面上端にある読んでいた本文の一節です。") },
+  });
+  assert.ok(snippetOf(opened).startsWith("画面上端にある"), snippetOf(opened));
+});
+
+test("bookmarklet: 画面上部に見出し等があれば、位置の文字ではなくそちらを使う(従来の動作)", () => {
+  const opened = runBookmarklet({
+    elems: [flowEl("画面上部にある段落の行です。", 40, 120)],
+    winExtra: posWin,
+    docExtra: { caretRangeFromPoint: () => textNodeAt("位置から拾った別の本文の一節です。") },
+  });
+  assert.ok(snippetOf(opened).startsWith("画面上部にある"), snippetOf(opened));
+});
+
+test("bookmarklet: 下の方の見出ししか無く、位置の文字も拾えなければ見出しを使う", () => {
+  const opened = runBookmarklet({
+    elems: [flowEl("画面のずっと下にある見出しの行です。", 500, 560)],
+    winExtra: posWin,
+    docExtra: { caretRangeFromPoint: () => null },
+  });
+  assert.ok(snippetOf(opened).startsWith("画面のずっと下"), snippetOf(opened));
+});
+
+test("bookmarklet: caretRangeFromPointが無い環境で候補も無ければ、これまでどおり空の断片(例外なし)", () => {
+  const opened = runBookmarklet({ elems: [], winExtra: posWin });
+  assert.equal(snippetOf(opened), "");
+});
+
 test("bookmarklet: 条件を満たす行がなければ、除外前の最初の可視行にフォールバックする", () => {
   const inHeader = flowEl("ヘッダーだけのページの文章です。", 0, 30, { closest: () => ({}) });
   const opened = runBookmarklet({ elems: [inHeader], winExtra: posWin });
@@ -396,6 +453,14 @@ test("findWebmarkByUrl: 別オリジン・短い数字・IDなしの別パスは
   assert.equal(api.findWebmarkByUrl(list, "https://twitter.com/a/status/2103927365977928019"), null);
   assert.equal(api.findWebmarkByUrl(list, "https://x.com/a/status/12345"), null);
   assert.equal(api.findWebmarkByUrl(list, "https://x.com/other/page"), null);
+});
+
+test("resume: 記録はあるが断片が空のときは、記録が無いのとは別の文言で再記録を促す", () => {
+  const c = runResume("");
+  c.listener(msg({ data: { type: "wm-snippet", s: "", found: true } }));
+  assert.equal(c.find, null);
+  assert.match(c.toasts.join(), /位置の文が空/);
+  assert.doesNotMatch(c.toasts.join(), /見つかりません/);
 });
 
 test("resume: 見つからないとき、押したページのパスを表示する(記録時のURLと見比べられるように)", () => {
