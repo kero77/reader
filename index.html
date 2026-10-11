@@ -1851,20 +1851,43 @@ function webmarkResume(){
     d.style.cssText="position:fixed;right:12px;bottom:12px;z-index:2147483647;background:#222;color:#fff;padding:8px 12px;border-radius:6px;font:14px sans-serif";
     document.body.appendChild(d); setTimeout(function(){ d.remove(); },3000);
   };
+  var go=function(s){
+    var sel=window.getSelection(), ok=false;
+    try{ sel.removeAllRanges(); ok=window.find(s,false,false,true,false,false,false); }catch(e){}
+    if(!ok){ toast("見つかりませんでした。ページの読み込み後にもう一度押してください"); return; }
+    var r=sel.rangeCount?sel.getRangeAt(0):null, n=r&&r.startContainer;
+    if(n&&n.nodeType===3) n=n.parentElement;
+    if(n&&n.scrollIntoView){ n.scrollIntoView({block:"start"}); if(window.scrollBy) window.scrollBy(0,-60); }
+    if(/(?:^#|&)wm=/.test(location.hash)) history.replaceState(null,"",location.href.split("#")[0]);
+    toast("続きの位置に移動しました");
+  };
   var m=/(?:^#|&)wm=([^&:]*)/.exec(location.hash), s="";
   try{ s=m?decodeURIComponent(m[1]):""; }catch(e){}
-  if(!s){ toast("続きの記録がありません（読みかけ一覧のリンクから開き直してください）"); return; }
-  var sel=window.getSelection(), ok=false;
-  try{ sel.removeAllRanges(); ok=window.find(s,false,false,true,false,false,false); }catch(e){}
-  if(!ok){ toast("見つかりませんでした。ページの読み込み後にもう一度押してください"); return; }
-  var r=sel.rangeCount?sel.getRangeAt(0):null, n=r&&r.startContainer;
-  if(n&&n.nodeType===3) n=n.parentElement;
-  if(n&&n.scrollIntoView){ n.scrollIntoView({block:"start"}); if(window.scrollBy) window.scrollBy(0,-60); }
-  history.replaceState(null,"",location.href.split("#")[0]);
-  toast("続きの位置に移動しました");
+  if(s){ go(s); return; }
+  var O="__ORIGIN__";
+  window.addEventListener("message",function(ev){
+    var d=ev.data;
+    if(ev.origin!==O||!d||d.type!=="wm-snippet") return;
+    if(!d.s){ toast("このページの読みかけが見つかりません"); return; }
+    go(d.s);
+  });
+  var w=window.open(O+"/#resume="+encodeURIComponent(location.href.split("#")[0]),"_blank");
+  if(!w) toast("読みかけ一覧のタブを開けませんでした（ポップアップを許可してください）");
 }
-function webmarkResumeBookmarklet(){
-  return "javascript:"+encodeURIComponent("("+webmarkResume.toString()+")()");
+function webmarkResumeBookmarklet(origin){
+  return "javascript:"+encodeURIComponent("("+webmarkResume.toString().replace("__ORIGIN__",origin)+")()");
+}
+function parseResumeHash(hash){
+  const m=/^#?resume=([^&]{1,4000})$/.exec(String(hash||""));
+  if(!m) return null;
+  try{ const u=decodeURIComponent(m[1]); return webmarkSafeUrl(u)?webmarkUrlKey(u):null; }catch(e){ return null; }
+}
+function findWebmarkByUrl(list,u){
+  const k=webmarkUrlKey(u);
+  return liveWebmarksOf(list).find(d=>webmarkUrlKey(d.url)===k)||null;
+}
+function webmarkResumeAllowed(referrer,u){
+  try{ return !!referrer && new URL(referrer).origin===new URL(u).origin; }catch(e){ return false; }
 }
 /* WEBMARK:END */
 
@@ -2095,11 +2118,22 @@ function deleteWebmark(id){
 function openWebmarks(note){
   $("#wmNote").textContent=note||"";
   $("#wmBookmarklet").href=webmarkBookmarklet(webmarkOrigin());
-  $("#wmResume").href=webmarkResumeBookmarklet();
+  $("#wmResume").href=webmarkResumeBookmarklet(webmarkOrigin());
   renderWebmarks();
   $("#webmarks").classList.remove("hidden");
 }
 function closeWebmarks(){ $("#webmarks").classList.add("hidden"); }
+// 「続きへ」ブックマークレットから開かれたとき、元ページ(opener)へ断片を返してこのタブを閉じる。
+// 返すのは「開いた元ページと同じオリジン」のURLの断片だけ（他サイトの閲覧履歴を探られないため）。返せなければ画面に表示する。
+function respondResume(u){
+  const d=findWebmarkByUrl(docs,u), s=d?(d.snippet||""):"";
+  if(window.opener && webmarkResumeAllowed(document.referrer,u)){
+    try{ window.opener.postMessage({type:"wm-snippet",u,s},"*"); }catch(e){}
+    setTimeout(()=>window.close(),300);
+    return;
+  }
+  openWebmarks(s ? "元のページへ送れませんでした。位置:「"+s+"」（Ctrl+F で貼り付けて探せます）" : "このページの読みかけは見つかりません。");
+}
 function intakeWebmarkFromHash(){
   const m=parseWebmarkHash(location.hash);
   if(!m) return false;
@@ -3009,7 +3043,7 @@ const copyBookmarklet=async(make)=>{
   catch(e){ $("#wmNote").textContent="コピーできませんでした。リンクをドラッグしてください。"; }
 };
 $("#btnWmCopy").onclick=()=>copyBookmarklet(()=>webmarkBookmarklet(webmarkOrigin()));
-$("#btnWmCopy2").onclick=()=>copyBookmarklet(webmarkResumeBookmarklet);
+$("#btnWmCopy2").onclick=()=>copyBookmarklet(()=>webmarkResumeBookmarklet(webmarkOrigin()));
 const btnSyncNow = document.getElementById("btnSyncNow");
 if (btnSyncNow) btnSyncNow.onclick = ()=>gistPull().then(()=>gistPush());
 $("#apiProvider").onchange=e=>loadProviderIntoForm(e.target.value);
@@ -3078,8 +3112,14 @@ window.addEventListener("beforeunload", ()=>{ clearTimeout(_pushTimer); gistPush
 })();
 // 読みかけ記事のハッシュ(#webmark=)があればローカルに登録する（Pull前でも登録。Pushは_pullOkガードでPull成功後まで止まる）
 const _wmIn=intakeWebmarkFromHash();
+const _rsUrl=parseResumeHash(location.hash);
+if(_rsUrl) history.replaceState(null,"",location.pathname+location.search);
 // 起動時に Gist から取得（トークン未設定時は即 return）
-gistPull();
+const _pull=gistPull();
+if(_rsUrl){
+  if(findWebmarkByUrl(docs,_rsUrl)) respondResume(_rsUrl);
+  else Promise.resolve(_pull).then(()=>respondResume(_rsUrl));
+}
 initTheme();
 renderDocSelect();
 { const live=liveDocs(); if(live.length) openDoc(live[0].id); else showNew(); }

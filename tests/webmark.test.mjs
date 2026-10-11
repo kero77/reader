@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.join(here, "..", "index.html"), "utf8");
 const m = /\/\* WEBMARK:BEGIN \*\/([\s\S]*?)\/\* WEBMARK:END \*\//.exec(html);
 assert.ok(m, "index.html に WEBMARK:BEGIN/END ブロックがない");
 const api = new Function(
-  m[1] + "; return {liveDocsOf,liveWebmarksOf,webmarkUrlKey,parseWebmarkHash,upsertWebmark,webmarkJumpUrl,webmarkBookmarklet,webmarkResumeBookmarklet,webmarkIntakeNote};"
+  m[1] + "; return {liveDocsOf,liveWebmarksOf,webmarkUrlKey,parseWebmarkHash,upsertWebmark,webmarkJumpUrl,webmarkBookmarklet,webmarkResumeBookmarklet,webmarkIntakeNote,parseResumeHash,findWebmarkByUrl,webmarkResumeAllowed};"
 )();
 
 const enc = (o) => Buffer.from(JSON.stringify(o), "utf8").toString("base64url");
@@ -269,11 +269,11 @@ test("bookmarklet: document.titleが空ならog:title、次に最初の見出し
   assert.equal(r4.t, "通常の題名");
 });
 
-function runResume(hash, { found = true } = {}) {
-  const bm = api.webmarkResumeBookmarklet();
+function runResume(hash, { found = true, popup = true } = {}) {
+  const bm = api.webmarkResumeBookmarklet("https://reader.example");
   assert.ok(bm.startsWith("javascript:"));
   const code = decodeURIComponent(bm.slice("javascript:".length));
-  const calls = { find: null, replaced: null, toasts: [], scrollIntoView: null, scrollBy: null };
+  const calls = { find: null, replaced: null, toasts: [], scrollIntoView: null, scrollBy: null, opened: null, listener: null };
   const doc = {
     createElement: () => ({ style: {}, remove() {} }),
     body: { appendChild: (d) => calls.toasts.push(d.textContent) },
@@ -287,6 +287,8 @@ function runResume(hash, { found = true } = {}) {
       getRangeAt: () => ({ startContainer: { nodeType: 3, parentElement: target } }),
     }),
     scrollBy: (x, y) => { calls.scrollBy = [x, y]; },
+    addEventListener: (type, fn) => { if (type === "message") calls.listener = fn; },
+    open: (u, t, f) => { calls.opened = [u, t, f]; return popup ? {} : null; },
   };
   const hist = { replaceState: (_a, _b, url) => { calls.replaced = url; } };
   new Function("document", "window", "location", "history", "setTimeout", code)(
@@ -316,10 +318,68 @@ test("resume: 見つからなければハッシュを残し(押し直せる)、�
   assert.match(c.toasts.join(), /見つかりませんでした/);
 });
 
-test("resume: wm=が無いURLでは探さず、案内を出す", () => {
+test("resume: wm=が無い(サイトがハッシュを消した)ときは、リーダーを開いて断片を受け取る(openerを残す)", () => {
   const c = runResume("");
   assert.equal(c.find, null);
-  assert.match(c.toasts.join(), /記録がありません/);
+  assert.equal(c.opened[0], "https://reader.example/#resume=" + encodeURIComponent("https://ex.com/a?x=1"));
+  assert.equal(c.opened[1], "_blank");
+  assert.ok(!/noopener/.test(String(c.opened[2])), "noopener だと断片を返せない");
+  assert.equal(typeof c.listener, "function");
+});
+
+const msg = (over = {}) => ({ origin: "https://reader.example", data: { type: "wm-snippet", s: "受け取った断片" }, ...over });
+
+test("resume: リーダーから断片が届いたら探して移動する(ハッシュは触らない)", () => {
+  const c = runResume("");
+  c.listener(msg());
+  assert.equal(c.find, "受け取った断片");
+  assert.match(c.toasts.join(), /移動/);
+  assert.equal(c.replaced, null);
+});
+
+test("resume: リーダー以外のオリジン・別種のメッセージは無視する", () => {
+  const c = runResume("");
+  c.listener(msg({ origin: "https://evil.example" }));
+  c.listener(msg({ data: { type: "other", s: "x" } }));
+  c.listener(msg({ data: null }));
+  assert.equal(c.find, null);
+});
+
+test("resume: リーダーに該当の読みかけが無ければ(断片が空)その旨を知らせる", () => {
+  const c = runResume("");
+  c.listener(msg({ data: { type: "wm-snippet", s: "" } }));
+  assert.equal(c.find, null);
+  assert.match(c.toasts.join(), /読みかけが見つかりません/);
+});
+
+test("resume: タブを開けない(ポップアップ拒否)ときは案内を出す", () => {
+  const c = runResume("", { popup: false });
+  assert.match(c.toasts.join(), /開けませんでした/);
+});
+
+test("parseResumeHash: #resume=<URL> を http(s) のみ受け付け、#以降を除く", () => {
+  assert.equal(api.parseResumeHash("#resume=" + encodeURIComponent("https://ex.com/a?x=1#h")), "https://ex.com/a?x=1");
+  assert.equal(api.parseResumeHash("#resume=" + encodeURIComponent("javascript:alert(1)")), null);
+  assert.equal(api.parseResumeHash("#resume=%E3%81"), null);
+  assert.equal(api.parseResumeHash("#webmark=abc"), null);
+  assert.equal(api.parseResumeHash(""), null);
+});
+
+test("findWebmarkByUrl: 削除済み・kindなしは対象外、#以降は無視して一致", () => {
+  const list = [
+    { id: "d1", title: "号", url: "https://ex.com/a" },
+    { id: "w1", kind: "webmark", url: "https://ex.com/a", snippet: "削除済み", deleted: true },
+    { id: "w2", kind: "webmark", url: "https://ex.com/a", snippet: "生きている" },
+  ];
+  assert.equal(api.findWebmarkByUrl(list, "https://ex.com/a#frag").snippet, "生きている");
+  assert.equal(api.findWebmarkByUrl(list, "https://ex.com/zzz"), null);
+});
+
+test("webmarkResumeAllowed: 開いた元ページと同じオリジンのURLの断片だけ返す(他サイトの閲覧履歴を探られないため)", () => {
+  assert.equal(api.webmarkResumeAllowed("https://x.com/", "https://x.com/a/status/1"), true);
+  assert.equal(api.webmarkResumeAllowed("https://evil.example/", "https://x.com/a/status/1"), false);
+  assert.equal(api.webmarkResumeAllowed("", "https://x.com/a"), false);
+  assert.equal(api.webmarkResumeAllowed("not a url", "https://x.com/a"), false);
 });
 
 test("resume: 壊れたエンコードでも例外を出さない", () => {
