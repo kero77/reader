@@ -158,9 +158,9 @@
     border-radius:6px; padding:4px 8px; font-weight:700; margin-left:0;
   }
   body[data-theme="dark"] .ai-status.warn{ color:#ffd9a0; background:#4a3a16; border-color:#6a531e; }
-  @media(max-width:680px){
-    #toc{flex-basis:46vw; position:absolute; z-index:5; height:100%; box-shadow:2px 0 8px #0002}
-    #toc.collapsed{display:none}
+  #toc.collapsed{display:none}
+  @media(max-width:900px){
+    #toc{flex-basis:70vw; max-width:320px; position:absolute; z-index:5; height:100%; box-shadow:2px 0 8px #0002}
     header select{max-width:30vw}
   }
   #syncBadge[data-state="syncing"]{ animation:spin .8s linear infinite; display:inline-block; }
@@ -190,7 +190,7 @@
 </header>
 
 <main>
-  <aside id="toc">
+  <aside id="toc" class="collapsed">
     <div class="toc-head"><span>しおり / 目次</span><span id="bmCount"></span></div>
     <div id="bmList"></div>
   </aside>
@@ -1991,7 +1991,7 @@ function jumpTo(b){
   const doc=getDoc(currentId); renderBookmarks(doc);
   document.querySelectorAll(".bm.here").forEach(x=>x.classList.remove("here"));
   const row=document.querySelector(`.bm[data-k="${bmKey(b)}"]`); if(row) row.classList.add("here");
-  if(window.innerWidth<=680) $("#toc").classList.add("collapsed");
+  if(isNarrow()) $("#toc").classList.add("collapsed");
 }
 
 /* ---------- 手動しおり（テキストのみ） ---------- */
@@ -3099,7 +3099,11 @@ $("#btnDelete").onclick=()=>{
   if(live.length) openDoc(live[0].id); else { renderDocSelect(); showNew(); }
 };
 $("#btnDrop").onclick=dropReadMark;
-$("#btnTocToggle").onclick=()=>$("#toc").classList.toggle("collapsed");
+/* iPhone等の狭い画面ではしおり欄を初期非表示にし、☰で開閉。本文タップでも自動で閉じる */
+function isNarrow(){ return window.innerWidth<=900; }
+if(!isNarrow()) $("#toc").classList.remove("collapsed");
+$("#btnTocToggle").onclick=e=>{ e.stopPropagation(); $("#toc").classList.toggle("collapsed"); };
+$("#reader").addEventListener("click",()=>{ if(isNarrow()) $("#toc").classList.add("collapsed"); });
 $("#btnTheme").onclick=toggleTheme;
 $("#reader").addEventListener("scroll",onReaderScroll,{passive:true});
 document.addEventListener("visibilitychange", ()=>{
